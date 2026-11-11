@@ -126,16 +126,16 @@ pub struct DeleteOptionCopy {
 pub fn delete_data_option() -> DeleteOptionCopy {
     DeleteOptionCopy {
         label: "데이터 디스크도 삭제",
-        description: "컨테이너 이미지와 볼륨이 담긴 데이터 디스크까지 지웁니다. 끄면 VM만 지워지고 같은 이름으로 다시 만들 때 데이터를 이어서 쓸 수 있습니다.",
+        description: "컨테이너 이미지와 볼륨이 담긴 디스크입니다.",
     }
 }
 
 /// What the chosen option costs, for the delete dialog body.
 pub fn delete_consequence(options: DeleteOptions) -> &'static str {
     if options.data {
-        "VM과 데이터 디스크가 함께 지워집니다. 이미지와 볼륨의 데이터는 되돌릴 수 없습니다."
+        "이미지도 함께 지워집니다."
     } else {
-        "VM만 지워지고 데이터 디스크는 남습니다. 같은 이름으로 다시 만들면 이미지와 볼륨을 이어서 쓸 수 있습니다."
+        "같은 이름으로 다시 만들면 이미지와 볼륨을 이어서 쓸 수 있습니다."
     }
 }
 
@@ -394,8 +394,8 @@ mod tests {
     fn delete_consequence_differs_by_option() {
         let keep = delete_consequence(DeleteOptions { data: false });
         let wipe = delete_consequence(DeleteOptions { data: true });
-        assert!(keep.contains("남습니다"));
-        assert!(wipe.contains("되돌릴 수 없습니다"));
+        assert!(keep.contains("이어서"));
+        assert!(wipe.contains("이미지"));
         assert_ne!(keep, wipe);
     }
 

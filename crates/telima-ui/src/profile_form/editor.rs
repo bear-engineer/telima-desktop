@@ -12,6 +12,7 @@ use telima_app::view::notice::error_text;
 use telima_core::profile::{HostOs, Mount, MountType, ProfileName, ProfileSpec, Runtime, VmType};
 use telima_core::rules::{self, RuleViolation};
 
+use super::progress::{ProgressEnd, StartProgress};
 use super::widgets::{Tone, button, edit_text, error_line, field_row, hint_line, text_box};
 use crate::components::dialog::fade_in;
 use crate::components::paragraph::paragraph;
@@ -218,14 +219,19 @@ pub enum Mode {
 }
 
 /// Emitted to the parent so it can close the form.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FormEvent {
     Saved(ProfileName),
     Cancelled,
+    /// A create passed the rules and started: the parent shows `progress` for the new
+    /// profile instead of a frozen form (F1). `Saved` follows only if the form stays open.
+    Creating {
+        spec: ProfileSpec,
+        progress: Entity<StartProgress>,
+    },
 }
 
 enum Msg {
-    Progress(String),
     Done(Result<(), AppError>),
 }
 
@@ -242,7 +248,8 @@ pub struct ProfileEditor {
     checked: bool,
     saving: bool,
     save_error: Option<String>,
-    progress: Vec<String>,
+    /// Progress of a running create.
+    creating: Option<(Entity<StartProgress>, Subscription)>,
     inbox: Inbox,
     name_focus: FocusHandle,
     /// One per `draft.mounts` row, same order.
@@ -276,7 +283,7 @@ impl ProfileEditor {
             checked: false,
             saving: false,
             save_error: None,
-            progress: Vec::new(),
+            creating: None,
             inbox: Inbox::default(),
             name_focus: cx.focus_handle(),
             mount_focus,
@@ -300,9 +307,9 @@ impl ProfileEditor {
         self.saving
     }
 
-    /// Progress lines from `colima start` while a new profile is created.
-    pub fn progress(&self) -> &[String] {
-        &self.progress
+    /// Progress of the create started by the last submit.
+    pub fn creating(&self) -> Option<&Entity<StartProgress>> {
+        self.creating.as_ref().map(|(p, _)| p)
     }
 
     /// True when the field cannot change: `rules::IMMUTABLE_FIELDS` on an existing profile.
@@ -505,19 +512,31 @@ impl ProfileEditor {
             return;
         };
         self.saving = true;
-        let done_inbox = self.inbox.clone();
-        let done = move |r| done_inbox.lock().unwrap().push(Msg::Done(r));
         match self.mode {
             Mode::Create => {
-                let inbox = self.inbox.clone();
-                self.app.create_profile(
-                    spec,
-                    move |ev| inbox.lock().unwrap().push(Msg::Progress(ev.message)),
-                    done,
-                );
+                let app = self.app.clone();
+                let run = spec.clone();
+                let progress = cx.new(|cx| StartProgress::create(app, run, cx));
+                let sub = cx.subscribe(&progress, |v, _, end: &ProgressEnd, cx| {
+                    v.saving = false;
+                    match end {
+                        ProgressEnd::Done => {
+                            if let Ok(name) = ProfileName::parse(v.draft.name.trim()) {
+                                cx.emit(FormEvent::Saved(name));
+                            }
+                        }
+                        ProgressEnd::Failed(e) => v.save_error = Some(e.clone()),
+                        ProgressEnd::Cancelled => {}
+                    }
+                    cx.notify();
+                });
+                self.creating = Some((progress.clone(), sub));
+                cx.emit(FormEvent::Creating { spec, progress });
             }
             Mode::Edit { .. } => {
-                self.app.update_profile(spec, done);
+                let inbox = self.inbox.clone();
+                self.app
+                    .update_profile(spec, move |r| inbox.lock().unwrap().push(Msg::Done(r)));
             }
         }
         cx.notify();
@@ -529,13 +548,15 @@ impl ProfileEditor {
 
     /// Applies finished use-case results. Called by the poll task (and by tests).
     pub fn pump(&mut self, cx: &mut Context<Self>) {
+        if let Some(progress) = self.creating().cloned() {
+            progress.update(cx, |p, cx| p.pump(cx));
+        }
         let msgs = std::mem::take(&mut *self.inbox.lock().unwrap());
         if msgs.is_empty() {
             return;
         }
         for msg in msgs {
             match msg {
-                Msg::Progress(line) => self.progress.push(line),
                 Msg::Done(result) => {
                     self.saving = false;
                     match result {

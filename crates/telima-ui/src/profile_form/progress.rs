@@ -10,13 +10,15 @@ use telima_app::AppError;
 use telima_app::profiles::Lifecycle;
 use telima_app::runtime::{App as Telima, Task as Work};
 use telima_app::view::notice::error_text;
+use telima_app::view::progress::{
+    CANCEL_START, CANCEL_START_HINT, LOG_EMPTY, LOG_WAITING, ProgressOutcome, STEPS_TITLE,
+    elapsed_text, log_line_count, progress_log_title, progress_status,
+};
 use telima_app::view::start_steps::{self, START_STEPS, StartProgress as StepProgress, StepState};
-use telima_core::profile::{ProfileName, ProgressEvent, ProgressLevel};
+use telima_core::profile::{ProfileName, ProfileSpec, ProgressEvent, ProgressLevel};
 
 use super::widgets::{Tone, button, error_line};
-use crate::components::chip::status_chip;
 use crate::components::paragraph::paragraph;
-use crate::components::status::Status;
 use crate::style::{hsla, palette, space};
 use crate::theme::{Palette, font, metric};
 
@@ -62,6 +64,8 @@ enum Msg {
 }
 
 type Inbox = Arc<Mutex<Vec<Msg>>>;
+type LineSink = Box<dyn FnMut(ProgressEvent) + Send>;
+type DoneSink = Box<dyn FnOnce(Result<(), AppError>) + Send>;
 
 pub struct StartProgress {
     name: ProfileName,
@@ -83,18 +87,37 @@ impl EventEmitter<ProgressEnd> for StartProgress {}
 impl StartProgress {
     /// Starts `cmd` on `name` and collects its progress lines.
     pub fn new(app: Telima, name: ProfileName, cmd: Lifecycle, cx: &mut Context<Self>) -> Self {
+        let target = name.clone();
+        Self::spawn(name, cmd, cx, move |lines, done| {
+            app.run_profile(target, cmd, lines, done)
+        })
+    }
+
+    /// Creates the profile in `spec` (`colima start` with its flags) and collects its
+    /// progress lines like a start (F1).
+    pub fn create(app: Telima, spec: ProfileSpec, cx: &mut Context<Self>) -> Self {
+        let name = spec.name.clone();
+        Self::spawn(name, Lifecycle::Start, cx, move |lines, done| {
+            app.create_profile(spec, lines, done)
+        })
+    }
+
+    fn spawn(
+        name: ProfileName,
+        cmd: Lifecycle,
+        cx: &mut Context<Self>,
+        run: impl FnOnce(LineSink, DoneSink) -> Work,
+    ) -> Self {
         let inbox = Inbox::default();
         let started = Instant::now();
         let lines = inbox.clone();
         let done = inbox.clone();
-        let work = app.run_profile(
-            name.clone(),
-            cmd,
-            move |event| {
+        let work = run(
+            Box::new(move |event| {
                 let at = started.elapsed();
                 lines.lock().unwrap().push(Msg::Line(Line { at, event }));
-            },
-            move |r| done.lock().unwrap().push(Msg::Done(r)),
+            }),
+            Box::new(move |r| done.lock().unwrap().push(Msg::Done(r))),
         );
         Self {
             name,
@@ -118,6 +141,11 @@ impl StartProgress {
 
     pub fn name(&self) -> &ProfileName {
         &self.name
+    }
+
+    /// The command this log follows (a create runs as a start).
+    pub fn cmd(&self) -> Lifecycle {
+        self.cmd
     }
 
     pub fn is_running(&self) -> bool {
@@ -190,16 +218,18 @@ impl StartProgress {
         cx.notify();
     }
 
-    fn title(&self) -> &'static str {
-        match (self.cmd, &self.end) {
-            (_, Some(ProgressEnd::Cancelled)) => "취소됨",
-            (_, Some(ProgressEnd::Failed(_))) => "실패",
-            (Lifecycle::Start, None) => "시작 중",
-            (Lifecycle::Stop, None) => "중지 중",
-            (Lifecycle::Restart, None) => "재시작 중",
-            (Lifecycle::Start | Lifecycle::Restart, Some(ProgressEnd::Done)) => "실행 중",
-            (Lifecycle::Stop, Some(ProgressEnd::Done)) => "중지됨",
+    fn outcome(&self) -> ProgressOutcome {
+        match &self.end {
+            None => ProgressOutcome::Running,
+            Some(ProgressEnd::Done) => ProgressOutcome::Done,
+            Some(ProgressEnd::Failed(_)) => ProgressOutcome::Failed,
+            Some(ProgressEnd::Cancelled) => ProgressOutcome::Cancelled,
         }
+    }
+
+    /// `시작 중`, `중지됨`, `실패`… The shell header chip shows it while the command runs.
+    pub fn status_label(&self) -> &'static str {
+        progress_status(self.cmd, self.outcome())
     }
 }
 
@@ -209,15 +239,6 @@ fn level_color(level: ProgressLevel, p: &Palette) -> Hsla {
         ProgressLevel::Warn => p.busy,
         ProgressLevel::Error => p.err,
     })
-}
-
-fn status_of(end: Option<&ProgressEnd>) -> Status {
-    match end {
-        None => Status::Busy,
-        Some(ProgressEnd::Done) => Status::Running,
-        Some(ProgressEnd::Cancelled) => Status::Stopped,
-        Some(ProgressEnd::Failed(_)) => Status::Error,
-    }
 }
 
 /// Six bars with step names: done = `bar`, current = `busy`, pending = empty track.
@@ -233,7 +254,7 @@ fn step_bars(steps: StepProgress, p: &Palette) -> Div {
                     div()
                         .text_size(px(font::BODY.size))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("시작 단계"),
+                        .child(STEPS_TITLE),
                 )
                 .child(
                     div()
@@ -293,34 +314,31 @@ impl Render for StartProgress {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(window);
         let running = self.is_running();
+        // The shell header above carries the name and the status chip (F3); after the end
+        // the outcome stays here as plain text because the chip returns to the VM state.
+        let outcome = (!running).then(|| {
+            let failed = matches!(self.end, Some(ProgressEnd::Failed(_)));
+            div()
+                .text_size(px(font::SMALL.size))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(hsla(if failed { p.err } else { p.text_2 }))
+                .child(self.status_label())
+        });
         let header = h_flex()
             .h(px(metric::ROW))
             .gap(space(2))
-            .child(
-                div()
-                    .text_size(px(font::TITLE.size))
-                    .line_height(px(font::TITLE.line_height))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(hsla(p.text))
-                    .child(self.name.to_string()),
-            )
-            .child(status_chip(
-                "progress-status",
-                status_of(self.end.as_ref()),
-                self.title(),
-                p,
-            ))
+            .children(outcome)
             .child(
                 div()
                     .font_family(font::MONO)
                     .text_size(px(font::SMALL.size))
                     .text_color(hsla(if running { p.busy } else { p.text_2 }))
-                    .child(format!("{} 경과", self.elapsed_label())),
+                    .child(elapsed_text(&self.elapsed_label())),
             )
             .child(div().flex_1())
             .when(running && self.cmd == Lifecycle::Start, |h| {
                 h.child(
-                    button("progress-cancel", "시작 취소", true, Tone::Default, p)
+                    button("progress-cancel", CANCEL_START, true, Tone::Default, p)
                         .on_click(cx.listener(|v, _, _, cx| v.cancel(cx))),
                 )
             });
@@ -341,9 +359,9 @@ impl Render for StartProgress {
             .line_height(px(font::CODE.line_height))
             .when(self.lines.is_empty(), |l| {
                 l.child(div().text_color(hsla(p.text_disabled)).child(if running {
-                    "로그를 기다리는 중…"
+                    LOG_WAITING
                 } else {
-                    "로그 없음"
+                    LOG_EMPTY
                 }))
             })
             .children(self.lines.iter().map(|line| {
@@ -368,12 +386,10 @@ impl Render for StartProgress {
             .text_color(hsla(p.text_2))
             .child(match &self.end {
                 Some(ProgressEnd::Failed(e)) => error_line("progress-error", e, p).flex_1(),
-                _ if self.cmd == Lifecycle::Start => {
-                    paragraph("취소하면 VM을 멈춥니다. 만든 디스크는 남습니다.").flex_1()
-                }
+                _ if self.cmd == Lifecycle::Start => paragraph(CANCEL_START_HINT).flex_1(),
                 _ => div().flex_1(),
             })
-            .child(format!("{}줄", self.lines.len()));
+            .child(log_line_count(self.lines.len()));
 
         v_flex()
             .size_full()
@@ -390,7 +406,7 @@ impl Render for StartProgress {
                 div()
                     .text_size(px(font::SMALL.size))
                     .text_color(hsla(p.text_2))
-                    .child("시작 로그"),
+                    .child(progress_log_title(self.cmd)),
             )
             .child(log)
             .child(footer)

@@ -406,6 +406,9 @@ fn sum_known_sizes(sizes: impl IntoIterator<Item = Option<u64>>) -> (u64, usize,
 fn volume_delete_label(sizes: impl IntoIterator<Item = Option<u64>>) -> String {
     let (total, known, unknown) = sum_known_sizes(sizes);
     let count = known + unknown;
+    if count == 0 {
+        return "프로필과 데이터 삭제".to_owned();
+    }
     if known == 0 {
         return format!("볼륨 {count}개 삭제");
     }

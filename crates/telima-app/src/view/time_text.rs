@@ -11,19 +11,23 @@ const DAY: u64 = 24 * HOUR;
 
 /// `가동 3시간 12분`. Two units at most; an empty second unit is left out.
 pub fn uptime_text(uptime: Duration) -> String {
+    format!("가동 {}", uptime_value(uptime))
+}
+
+/// `3시간 12분` without the 가동 prefix (the inspector row is already labelled 가동 시간).
+pub fn uptime_value(uptime: Duration) -> String {
     let secs = uptime.as_secs();
     if secs < MINUTE {
-        return "가동 1분 미만".to_owned();
+        return "1분 미만".to_owned();
     }
     let (days, hours, minutes) = (secs / DAY, secs % DAY / HOUR, secs % HOUR / MINUTE);
-    let text = if days > 0 {
+    if days > 0 {
         pair(days, "일", hours, "시간")
     } else if hours > 0 {
         pair(hours, "시간", minutes, "분")
     } else {
         format!("{minutes}분")
-    };
-    format!("가동 {text}")
+    }
 }
 
 fn pair(major: u64, major_unit: &str, minor: u64, minor_unit: &str) -> String {
@@ -37,6 +41,11 @@ fn pair(major: u64, major_unit: &str, minor: u64, minor_unit: &str) -> String {
 /// Uptime copy of a profile, `None` when the start time is unknown.
 pub fn uptime_label(info: &RuntimeInfo, now: UnixMillis) -> Option<String> {
     info.uptime(now).map(uptime_text)
+}
+
+/// [`uptime_value`] of a profile, `None` when the start time is unknown.
+pub fn uptime_value_label(info: &RuntimeInfo, now: UnixMillis) -> Option<String> {
+    info.uptime(now).map(uptime_value)
 }
 
 /// `5분 전`, `3시간 전`, `2일 전`. A start time in the future (clock skew) reads as just now.

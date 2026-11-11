@@ -17,7 +17,7 @@ use telima_app::view::daily::{
     version_footer, version_notice,
 };
 use telima_app::view::notice::{NoticeKind, error_text, notice};
-use telima_app::view::time_text::uptime_label;
+use telima_app::view::time_text::{uptime_label, uptime_value_label};
 use telima_app::view::{
     Confirm, ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile, profile_detail,
     profile_rows,
@@ -116,6 +116,15 @@ pub struct MainView {
     notice_dismissed: bool,
     /// Open 캐시 정리 confirmation.
     prune_confirm: Option<Confirm>,
+    /// Focus of the 캐시 정리 confirmation, so Escape reaches it (F2).
+    prune_focus: FocusHandle,
+    /// Set by [`Self::prune`] until the next render moves focus into the confirmation.
+    prune_focus_on_open: bool,
+    /// Profiles being created, shown in the sidebar until `colima ls` lists them (F1).
+    placeholders: HashMap<ProfileName, Profile>,
+    /// Docker server version last reported by any profile; the footer keeps it while the
+    /// selected profile's engine is down (F10).
+    last_docker_server: Option<String>,
     _poll: Task<()>,
 }
 
@@ -149,6 +158,10 @@ impl MainView {
             version: None,
             notice_dismissed: false,
             prune_confirm: None,
+            prune_focus: cx.focus_handle(),
+            prune_focus_on_open: false,
+            placeholders: HashMap::new(),
+            last_docker_server: None,
             _poll: poll,
         };
         view.refresh();
@@ -219,6 +232,11 @@ impl MainView {
         for msg in msgs {
             match msg {
                 Msg::Profiles(Ok(mut list)) => {
+                    for (name, p) in &self.placeholders {
+                        if !list.iter().any(|q| &q.name == name) {
+                            list.push(p.clone());
+                        }
+                    }
                     list.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
                     let keep = self
                         .selected
@@ -254,6 +272,9 @@ impl MainView {
                 }
                 Msg::Config(_, Err(_)) => {}
                 Msg::Runtime(name, Ok(info)) => {
+                    if info.docker_server.is_some() {
+                        self.last_docker_server = info.docker_server.clone();
+                    }
                     self.runtime.insert(name, info);
                 }
                 // Unknown uptime and versions show as —.
@@ -327,18 +348,34 @@ impl MainView {
         });
     }
 
-    /// `가동 3시간 12분` for the selected profile while it runs.
-    pub fn uptime(&self) -> Option<String> {
+    /// Runtime info of the selected profile while it runs and no command is changing it.
+    fn running_info(&self) -> Option<&RuntimeInfo> {
         let name = self.selected.as_ref()?;
         let p = self.list().iter().find(|p| &p.name == name)?;
-        if p.status != ProfileStatus::Running {
+        if p.status != ProfileStatus::Running || self.busy(name) {
             return None;
         }
-        uptime_label(self.runtime.get(name)?, clock::now())
+        self.runtime.get(name)
+    }
+
+    /// `가동 3시간 12분` for the selected profile while it runs (not while it stops, F3).
+    pub fn uptime(&self) -> Option<String> {
+        uptime_label(self.running_info()?, clock::now())
+    }
+
+    /// Status chip text of the profile header: the running command's status (`중지 중`)
+    /// while its progress runs, else the VM state (F3: one chip, not two).
+    pub fn header_status_label(&self, cx: &App) -> Option<String> {
+        if let Some(p) = self.progress().map(|p| p.read(cx))
+            && p.is_running()
+        {
+            return Some(p.status_label().to_owned());
+        }
+        self.detail().map(|d| d.status_label.to_string())
     }
 
     /// Colima and Docker versions for the sidebar footer (selected profile; Colima falls
-    /// back to the startup check).
+    /// back to the startup check, Docker to the last server version seen, F10).
     pub fn version_footer(&self) -> VersionFooter {
         let mut info = self
             .selected
@@ -348,6 +385,9 @@ impl MainView {
             .unwrap_or_default();
         if info.colima.is_none() {
             info.colima = self.version.map(|v| v.version);
+        }
+        if info.docker_server.is_none() {
+            info.docker_server = self.last_docker_server.clone();
         }
         version_footer(&info)
     }
@@ -371,10 +411,16 @@ impl MainView {
         self.prune_confirm.as_ref()
     }
 
-    /// Opens the 캐시 정리 confirmation; nothing runs yet.
+    /// Opens the 캐시 정리 confirmation; nothing runs yet. It takes focus on the next render.
     pub fn prune(&mut self, cx: &mut Context<Self>) {
         self.prune_confirm = Some(confirm_prune_cache());
+        self.prune_focus_on_open = true;
         cx.notify();
+    }
+
+    /// True while keyboard focus is inside the 캐시 정리 confirmation.
+    pub fn prune_has_focus(&self, window: &Window) -> bool {
+        self.prune_focus.is_focused(window)
     }
 
     pub fn cancel_prune(&mut self, cx: &mut Context<Self>) {
@@ -399,15 +445,78 @@ impl MainView {
         let sub = cx.subscribe(&editor, |v, _, ev: &FormEvent, cx| {
             v.editor = None;
             v.creating = false;
-            if let FormEvent::Saved(name) = ev {
-                v.selected = Some(name.clone());
-                // The spec may have changed: reload it with the list.
-                v.configs.remove(name);
-                v.refresh();
+            match ev {
+                FormEvent::Saved(name) => {
+                    v.selected = Some(name.clone());
+                    // The spec may have changed: reload it with the list.
+                    v.configs.remove(name);
+                    v.refresh();
+                }
+                FormEvent::Creating { spec, progress } => {
+                    v.show_create(spec, progress.clone(), cx);
+                }
+                FormEvent::Cancelled => {}
             }
             cx.notify();
         });
         self.editor = Some((editor, sub));
+        cx.notify();
+    }
+
+    /// Lists and selects a profile being created and shows its start progress (F1).
+    fn show_create(
+        &mut self,
+        spec: &ProfileSpec,
+        progress: Entity<StartProgress>,
+        cx: &mut Context<Self>,
+    ) {
+        let name = spec.name.clone();
+        let placeholder = Profile {
+            name: name.clone(),
+            status: ProfileStatus::Stopped,
+            arch: "—".to_owned(),
+            cpus: spec.cpus,
+            memory_bytes: u64::from(spec.memory_gib) << 30,
+            disk_bytes: u64::from(spec.disk_gib) << 30,
+            address: None,
+            runtime: spec.runtime,
+        };
+        if let Some(list) = &mut self.profiles
+            && !list.iter().any(|p| p.name == name)
+        {
+            list.push(placeholder.clone());
+            list.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+        }
+        self.placeholders.insert(name.clone(), placeholder);
+        self.selected = Some(name.clone());
+        self.configs.remove(&name);
+        self.error = None;
+        self.sync_engine(cx);
+        self.track(name, progress, cx);
+    }
+
+    /// Marks `name` busy and shows `progress` until it ends.
+    fn track(
+        &mut self,
+        name: ProfileName,
+        progress: Entity<StartProgress>,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending.insert(name.clone());
+        self.started.insert(name.clone(), Instant::now());
+        let key = name.clone();
+        let sub = cx.subscribe(&progress, move |v, _, ev: &ProgressEnd, cx| {
+            v.pending.remove(&key);
+            v.started.remove(&key);
+            v.placeholders.remove(&key);
+            // A clean finish needs no log; failures and cancels stay until closed.
+            if *ev == ProgressEnd::Done {
+                v.progress.remove(&key);
+            }
+            v.refresh();
+            cx.notify();
+        });
+        self.progress.insert(name, (progress, sub));
         cx.notify();
     }
 
@@ -530,27 +639,13 @@ impl MainView {
         if self.busy(&name) {
             return;
         }
-        self.pending.insert(name.clone());
-        self.started.insert(name.clone(), Instant::now());
         self.error = None;
         self.editor = None;
         self.creating = false;
         let app = self.app.clone();
-        let key = name.clone();
         let target = name.clone();
         let progress = cx.new(|cx| StartProgress::new(app, target, cmd, cx));
-        let sub = cx.subscribe(&progress, move |v, _, ev: &ProgressEnd, cx| {
-            v.pending.remove(&key);
-            v.started.remove(&key);
-            // A clean finish needs no log; failures and cancels stay until closed.
-            if *ev == ProgressEnd::Done {
-                v.progress.remove(&key);
-            }
-            v.refresh();
-            cx.notify();
-        });
-        self.progress.insert(name, (progress, sub));
-        cx.notify();
+        self.track(name, progress, cx);
     }
 }
 
@@ -710,7 +805,12 @@ impl MainView {
                 ("메모리", d.memory),
                 ("디스크", d.disk),
                 ("IP 주소", d.address),
-                ("가동 시간", self.uptime().unwrap_or_else(|| "—".to_owned())),
+                (
+                    "가동 시간",
+                    self.running_info()
+                        .and_then(|i| uptime_value_label(i, clock::now()))
+                        .unwrap_or_else(|| "—".to_owned()),
+                ),
                 ("Kubernetes", kubernetes.to_owned()),
             ],
             can_edit: d.actions.edit,
@@ -1021,6 +1121,12 @@ impl MainView {
             v_flex()
                 .id("prune-confirm")
                 .occlude()
+                .track_focus(&self.prune_focus)
+                .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
+                    if ev.keystroke.key == "escape" {
+                        v.cancel_prune(cx);
+                    }
+                }))
                 .gap(space(2))
                 .child(heading(c.title, p))
                 .child(note(&c.body, p))
@@ -1066,7 +1172,8 @@ impl MainView {
             .child(status_chip(
                 "header-status",
                 status_of(d.kind),
-                d.status_label,
+                self.header_status_label(cx)
+                    .unwrap_or_else(|| d.status_label.to_string()),
                 p,
             ))
             .when_some(self.uptime(), |el, up| el.child(label_chip(up, p)))
@@ -1247,6 +1354,9 @@ impl MainView {
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(window);
+        if self.prune_confirm.is_some() && std::mem::take(&mut self.prune_focus_on_open) {
+            window.focus(&self.prune_focus, cx);
+        }
         let overlay = self.delete_confirm().cloned().map(|confirm| {
             fade_in(
                 "delete-confirm-scrim",
