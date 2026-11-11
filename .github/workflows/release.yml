@@ -1,0 +1,85 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-15
+            asset: macos-arm64
+          - os: ubuntu-24.04
+            asset: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag matches Cargo version
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != Cargo version v$v" >&2; exit 1; }
+      - name: linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo -S -p '' apt-get update
+          sudo -S -p '' apt-get install -y clang libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev libvulkan1 libssl-dev libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.os }}
+      - name: macOS app (unsigned)
+        if: runner.os == 'macOS'
+        run: |
+          scripts/bundle-macos.sh
+          mkdir -p dist
+          ditto -c -k --keepParent target/release/bundle/telima.app "dist/telima-${GITHUB_REF_NAME}-${{ matrix.asset }}.zip"
+      - name: Linux tarball
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --locked -p telima
+          name="telima-${GITHUB_REF_NAME}-${{ matrix.asset }}"
+          mkdir -p "dist/$name"
+          cp target/release/telima "dist/$name/"
+          cp packaging/linux/*.desktop "dist/$name/"
+          cp -R assets/icon/hicolor "dist/$name/hicolor"
+          cp README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
+      - name: checksums
+        run: cd dist && shasum -a 256 * > "SHA256SUMS-${{ matrix.asset }}.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: release notes from CHANGELOG.md
+        run: |
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ["GITHUB_REF_NAME"]
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(r"^## \[?" + re.escape(tag) + r"\b.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
+          body = m.group(1).strip() if m else ""
+          if not body:
+              raise SystemExit(f"no CHANGELOG section for {tag}")
+          open("notes.md", "w", encoding="utf-8").write(body + "\n")
+          PY
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "telima $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
