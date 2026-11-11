@@ -4,7 +4,8 @@
 
 use telima_core::profile::{Profile, ProfileName};
 
-use super::StatusKind;
+use super::progress::{ProgressOutcome, progress_status};
+use super::{StatusKind, profile_actions, status_kind};
 use crate::command::AppCommand;
 use crate::profiles::Lifecycle;
 
@@ -78,6 +79,44 @@ pub struct TrayModel {
     pub quit: CommandItem,
 }
 
+fn lifecycle_label(cmd: Lifecycle) -> &'static str {
+    match cmd {
+        Lifecycle::Start => "시작",
+        Lifecycle::Stop => "중지",
+        Lifecycle::Restart => "재시작",
+    }
+}
+
+fn lifecycle_item(name: &ProfileName, cmd: Lifecycle, enabled: bool) -> CommandItem {
+    let command = match cmd {
+        Lifecycle::Start => AppCommand::Start(name.clone()),
+        Lifecycle::Stop => AppCommand::Stop(name.clone()),
+        Lifecycle::Restart => AppCommand::Restart(name.clone()),
+    };
+    CommandItem {
+        label: lifecycle_label(cmd).to_owned(),
+        command,
+        enabled,
+    }
+}
+
+fn fixed_item(label: &str, command: AppCommand) -> CommandItem {
+    CommandItem {
+        label: label.to_owned(),
+        command,
+        enabled: true,
+    }
+}
+
+fn error_label(error: &TrayError) -> String {
+    match error {
+        TrayError::Lifecycle { name, cmd } => {
+            format!("오류: {name} {} 실패 — 창에서 보기", lifecycle_label(*cmd))
+        }
+        TrayError::List => "오류: 프로필 목록을 읽지 못함 — 창에서 보기".to_owned(),
+    }
+}
+
 /// Build the tray menu. `busy` tells what runs on a profile, if anything.
 /// Busy and failed profiles count in neither number of the summary.
 pub fn tray_model(
@@ -85,8 +124,49 @@ pub fn tray_model(
     busy: impl Fn(&ProfileName) -> Option<BusyOp>,
     error: Option<&TrayError>,
 ) -> TrayModel {
-    let _ = (profiles, &busy, error);
-    todo!("RED")
+    let failed = match error {
+        Some(TrayError::Lifecycle { name, .. }) => Some(name),
+        _ => None,
+    };
+    let rows: Vec<TrayProfileRow> = profiles
+        .iter()
+        .map(|p| {
+            let op = busy(&p.name);
+            // A retry on the failed profile shows as busy, not as the old error.
+            let kind = if op.is_none() && failed == Some(&p.name) {
+                StatusKind::Error
+            } else {
+                status_kind(p, op.is_some())
+            };
+            let status = match op {
+                Some(BusyOp::Lifecycle(cmd)) => progress_status(cmd, ProgressOutcome::Running),
+                _ => kind.label(),
+            };
+            let actions = profile_actions(kind, false);
+            TrayProfileRow {
+                name: p.name.as_str().to_owned(),
+                kind,
+                status: status.to_owned(),
+                start: lifecycle_item(&p.name, Lifecycle::Start, actions.start),
+                stop: lifecycle_item(&p.name, Lifecycle::Stop, actions.stop),
+                restart: lifecycle_item(&p.name, Lifecycle::Restart, actions.restart),
+            }
+        })
+        .collect();
+    let count = |kind| rows.iter().filter(|r| r.kind == kind).count();
+    let summary = format!(
+        "Colima 실행 중 {} · 중지 {}",
+        count(StatusKind::Running),
+        count(StatusKind::Stopped)
+    );
+    TrayModel {
+        error: error.map(|e| fixed_item(&error_label(e), AppCommand::OpenWindow)),
+        summary,
+        profiles: rows,
+        open_window: fixed_item(TRAY_OPEN_WINDOW, AppCommand::OpenWindow),
+        refresh: fixed_item(REFRESH, AppCommand::Refresh),
+        quit: fixed_item(TRAY_QUIT, AppCommand::Quit),
+    }
 }
 
 /// Which tray icon to show. One at a time: error, then busy, then running.
@@ -105,13 +185,25 @@ pub enum TrayIconState {
 impl TrayIconState {
     /// Tooltip and accessibility label of the icon.
     pub fn tooltip(self) -> &'static str {
-        todo!("RED")
+        match self {
+            Self::AllStopped | Self::Running => "telima",
+            Self::Busy => "telima, 작업 중",
+            Self::Error => "telima, 오류",
+        }
     }
 }
 
 pub fn tray_icon_state(model: &TrayModel) -> TrayIconState {
-    let _ = model;
-    todo!("RED")
+    let any = |kind| model.profiles.iter().any(|r| r.kind == kind);
+    if model.error.is_some() || any(StatusKind::Error) {
+        TrayIconState::Error
+    } else if any(StatusKind::Busy) {
+        TrayIconState::Busy
+    } else if any(StatusKind::Running) {
+        TrayIconState::Running
+    } else {
+        TrayIconState::AllStopped
+    }
 }
 
 /// Buttons on the right of the window toolbar.
@@ -126,8 +218,23 @@ pub struct ToolbarActions {
 
 /// `selected` is the profile shown in the window and its sidebar status.
 pub fn toolbar_actions(selected: Option<(&ProfileName, StatusKind)>) -> ToolbarActions {
-    let _ = selected;
-    todo!("RED")
+    let lifecycle = selected.map_or_else(Vec::new, |(name, kind)| {
+        let fits = profile_actions(kind, false);
+        [
+            (Lifecycle::Start, fits.start),
+            (Lifecycle::Restart, fits.restart),
+            (Lifecycle::Stop, fits.stop),
+        ]
+        .into_iter()
+        .filter(|(_, fits)| *fits)
+        .map(|(cmd, _)| lifecycle_item(name, cmd, true))
+        .collect()
+    });
+    ToolbarActions {
+        lifecycle,
+        refresh: fixed_item(REFRESH, AppCommand::Refresh),
+        new_profile: fixed_item(NEW_PROFILE, AppCommand::NewProfile),
+    }
 }
 
 #[cfg(test)]

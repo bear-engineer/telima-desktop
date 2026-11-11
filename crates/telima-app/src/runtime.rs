@@ -275,7 +275,7 @@ impl ContainerEngine for SharedEngine {
 }
 
 /// How often the binary reads the profile list for the tray while no window is open.
-pub const PROFILE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+pub const PROFILE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Handle to work started through [`App`]. Dropping it lets the work finish.
 #[derive(Debug, Clone)]
@@ -385,8 +385,7 @@ impl App {
         &self,
         done: impl FnOnce(Result<Vec<Profile>, AppError>) + Send + 'static,
     ) -> Task {
-        let _ = done;
-        todo!("RED")
+        self.list_profiles(done)
     }
 
     pub fn create_profile(
