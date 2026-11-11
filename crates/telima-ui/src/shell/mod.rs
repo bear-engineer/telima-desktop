@@ -4,7 +4,7 @@
 //! inbox; [`MainView::pump`] applies them on the GPUI thread (a poll task calls it).
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -12,12 +12,18 @@ use gpui_kit::*;
 use telima_app::AppError;
 use telima_app::profiles::Lifecycle;
 use telima_app::runtime::App as Telima;
+use telima_app::view::notice::{NoticeKind, error_text, notice};
 use telima_app::view::{
     ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile, profile_detail, profile_rows,
 };
 use telima_core::profile::{Profile, ProfileName, ProfileSpec};
 
-use crate::engine_views::EnginePanel;
+use crate::components::button::{ButtonVariant, button, icon_button};
+use crate::components::chip::status_chip;
+use crate::components::dialog::{fade_in, scrim};
+use crate::components::skeleton::skeleton_row;
+use crate::components::status::{Status, status_shape};
+use crate::engine_views::{EnginePanel, ListState};
 use crate::profile_form::{
     DeleteConfirm, DeleteEvent, FormEvent, ProfileEditor, ProgressEnd, StartProgress,
 };
@@ -62,7 +68,14 @@ impl Tab {
 pub struct MainView {
     app: Telima,
     inbox: Inbox,
-    profiles: Vec<Profile>,
+    /// `None` until the first `list_profiles` answer (loading skeleton).
+    profiles: Option<Vec<Profile>>,
+    /// Set when the profile list failed because Colima is missing.
+    not_installed: Option<(String, Option<&'static str>)>,
+    /// The open editor is the create form (it replaces the header).
+    creating: bool,
+    /// When each pending lifecycle command was sent (busy row elapsed time).
+    started: HashMap<ProfileName, Instant>,
     selected: Option<ProfileName>,
     /// Profiles with a lifecycle command sent but not finished.
     pending: HashSet<ProfileName>,
@@ -91,7 +104,10 @@ impl MainView {
         let mut view = Self {
             app: app.clone(),
             inbox: Inbox::default(),
-            profiles: Vec::new(),
+            profiles: None,
+            not_installed: None,
+            creating: false,
+            started: HashMap::new(),
             selected: None,
             pending: HashSet::new(),
             error: None,
@@ -175,10 +191,18 @@ impl MainView {
                     if !keep {
                         self.selected = list.first().map(|p| p.name.clone());
                     }
-                    self.profiles = list;
+                    self.profiles = Some(list);
+                    self.not_installed = None;
                     self.sync_engine(cx);
                 }
-                Msg::Profiles(Err(e)) => self.error = Some(e.to_string()),
+                Msg::Profiles(Err(e)) => {
+                    let n = notice(&e);
+                    if n.kind == NoticeKind::NotInstalled {
+                        self.not_installed = Some((n.message, n.hint));
+                    } else {
+                        self.error = Some(n.message);
+                    }
+                }
                 Msg::Spec(name, Ok(spec)) => {
                     if self.selected.as_ref() == Some(&name) {
                         let (app, os) = (self.app.clone(), self.app.host_os());
@@ -186,7 +210,7 @@ impl MainView {
                         self.open_editor(editor, cx);
                     }
                 }
-                Msg::Spec(_, Err(e)) => self.error = Some(e.to_string()),
+                Msg::Spec(_, Err(e)) => self.error = Some(error_text(&e)),
                 Msg::DeleteFacts(name, containers, volumes, bytes) => {
                     if self.selected.as_ref() == Some(&name) && self.delete_confirm.is_none() {
                         let copy = confirm_delete_profile(&name, containers, volumes, bytes);
@@ -217,6 +241,7 @@ impl MainView {
     fn open_editor(&mut self, editor: Entity<ProfileEditor>, cx: &mut Context<Self>) {
         let sub = cx.subscribe(&editor, |v, _, ev: &FormEvent, cx| {
             v.editor = None;
+            v.creating = false;
             if let FormEvent::Saved(name) = ev {
                 v.selected = Some(name.clone());
                 v.refresh();
@@ -233,20 +258,21 @@ impl MainView {
 
     /// Sidebar rows, sorted by name.
     pub fn rows(&self) -> Vec<ProfileRow> {
-        profile_rows(&self.profiles, |n| self.busy(n))
+        profile_rows(self.list(), |n| self.busy(n))
     }
 
     /// Detail of the selected profile.
     pub fn detail(&self) -> Option<ProfileDetail> {
         let name = self.selected.as_ref()?;
-        let p = self.profiles.iter().find(|p| &p.name == name)?;
+        let p = self.list().iter().find(|p| &p.name == name)?;
         Some(profile_detail(p, None, self.busy(name)))
     }
 
     pub fn select(&mut self, name: &str, cx: &mut Context<Self>) {
-        if let Some(p) = self.profiles.iter().find(|p| p.name.as_str() == name) {
+        if let Some(p) = self.list().iter().find(|p| p.name.as_str() == name) {
             self.selected = Some(p.name.clone());
             self.editor = None;
+            self.creating = false;
             self.sync_engine(cx);
             cx.notify();
         }
@@ -291,6 +317,7 @@ impl MainView {
         let (app, os) = (self.app.clone(), self.app.host_os());
         let editor = cx.new(|cx| ProfileEditor::create(app, os, cx));
         self.open_editor(editor, cx);
+        self.creating = true;
     }
 
     /// Counts what the selected profile's delete would remove, then opens the typed-name
@@ -343,14 +370,17 @@ impl MainView {
             return;
         }
         self.pending.insert(name.clone());
+        self.started.insert(name.clone(), Instant::now());
         self.error = None;
         self.editor = None;
+        self.creating = false;
         let app = self.app.clone();
         let key = name.clone();
         let target = name.clone();
         let progress = cx.new(|cx| StartProgress::new(app, target, cmd, cx));
         let sub = cx.subscribe(&progress, move |v, _, ev: &ProgressEnd, cx| {
             v.pending.remove(&key);
+            v.started.remove(&key);
             // A clean finish needs no log; failures and cancels stay until closed.
             if *ev == ProgressEnd::Done {
                 v.progress.remove(&key);
@@ -363,169 +393,470 @@ impl MainView {
     }
 }
 
-/// Status shape: filled dot running, hollow ring stopped, arc busy, triangle error.
-fn status_shape(kind: StatusKind, p: &Palette) -> Div {
-    let size = px(8.);
-    let base = div().size(size).flex_none();
-    match kind {
-        StatusKind::Running => base.rounded_full().bg(hsla(p.ok)),
-        StatusKind::Stopped => base.rounded_full().border_1().border_color(hsla(p.idle)),
-        StatusKind::Busy => base
-            .rounded_full()
-            .border_1()
-            .border_color(hsla(p.track))
-            .border_t_1()
-            .border_r_1(),
-        StatusKind::Error => div()
-            .flex_none()
-            .text_size(size)
-            .line_height(size)
-            .text_color(hsla(p.err))
-            .child("▲"),
+/// What the window shows (one state at a time).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Screen {
+    /// First profile list not answered yet: skeleton rows.
+    Loading,
+    /// Colima is missing: Korean message and an install hint.
+    NotInstalled {
+        message: String,
+        hint: Option<&'static str>,
+    },
+    /// No profiles: empty state with a 새 프로필 button.
+    Empty,
+    /// The selected profile: header, tabs, inspector.
+    Profile,
+    /// The create form replaces the header; no profile actions.
+    Create,
+}
+
+/// Lifecycle buttons in the profile header (only the ones valid for the state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderAction {
+    Start,
+    Restart,
+    Stop,
+}
+
+impl HeaderAction {
+    fn label(self) -> &'static str {
+        match self {
+            HeaderAction::Start => "시작",
+            HeaderAction::Restart => "재시작",
+            HeaderAction::Stop => "중지",
+        }
     }
 }
 
-fn button(
-    id: &'static str,
-    label: &'static str,
-    enabled: bool,
-    primary: bool,
-    p: &Palette,
-) -> Stateful<Div> {
-    let (bg, fg) = match (enabled, primary) {
-        (false, _) => (p.bg_chrome, p.text_disabled),
-        (true, true) => (p.accent, p.on_accent),
-        (true, false) => (p.bg_raised, p.text),
-    };
-    let el = div()
-        .id(id)
-        .h(px(metric::ROW))
-        .px(space(2))
-        .flex()
-        .items_center()
-        .rounded(px(metric::RADIUS_MD))
-        .border_1()
-        .border_color(hsla(p.border))
-        .bg(hsla(bg))
-        .text_color(hsla(fg))
-        .text_size(px(font::BODY.size))
-        .child(label);
-    if enabled {
-        let hover = if primary { p.accent_text } else { p.bg_hover };
-        el.cursor_pointer().hover(move |s| s.bg(hsla(hover)))
-    } else {
-        el
+/// The 구성 inspector of the selected profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inspector {
+    /// Label and value, in canvas order.
+    pub rows: Vec<(&'static str, String)>,
+    pub socket: String,
+    pub can_edit: bool,
+    pub can_delete: bool,
+}
+
+/// Docker socket of a profile, as shown to the user (`~/.colima/<profile>/docker.sock`).
+fn docker_socket(profile: &str) -> String {
+    format!("~/.colima/{profile}/docker.sock")
+}
+
+/// Status shape and chip for a view status.
+fn status_of(kind: StatusKind) -> Status {
+    match kind {
+        StatusKind::Running => Status::Running,
+        StatusKind::Stopped => Status::Stopped,
+        StatusKind::Busy => Status::Busy,
+        StatusKind::Error => Status::Error,
     }
+}
+
+/// `mm:ss` since a lifecycle command was sent.
+fn elapsed_text(since: Instant) -> String {
+    let s = since.elapsed().as_secs();
+    format!("{:02}:{:02}", s / 60, s % 60)
+}
+
+impl MainView {
+    fn list(&self) -> &[Profile] {
+        self.profiles.as_deref().unwrap_or(&[])
+    }
+
+    /// What the window shows now.
+    pub fn screen(&self) -> Screen {
+        if let Some((message, hint)) = &self.not_installed {
+            return Screen::NotInstalled {
+                message: message.clone(),
+                hint: *hint,
+            };
+        }
+        if self.creating {
+            return Screen::Create;
+        }
+        match &self.profiles {
+            None => Screen::Loading,
+            Some(list) if list.is_empty() => Screen::Empty,
+            Some(_) => Screen::Profile,
+        }
+    }
+
+    /// Korean error banner text, if any.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Breadcrumb after 프로필 › in the main title bar.
+    pub fn crumb(&self) -> Option<String> {
+        match self.screen() {
+            Screen::Create => Some("새 프로필".to_owned()),
+            Screen::Profile => self.selected.as_ref().map(|n| n.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Header buttons valid for the selected profile's state, in canvas order.
+    pub fn header_actions(&self) -> Vec<HeaderAction> {
+        if self.screen() != Screen::Profile {
+            return Vec::new();
+        }
+        let Some(a) = self.detail().map(|d| d.actions) else {
+            return Vec::new();
+        };
+        [
+            (a.start, HeaderAction::Start),
+            (a.restart, HeaderAction::Restart),
+            (a.stop, HeaderAction::Stop),
+        ]
+        .into_iter()
+        .filter_map(|(ok, act)| ok.then_some(act))
+        .collect()
+    }
+
+    /// 구성 inspector rows of the selected profile.
+    pub fn inspector(&self) -> Option<Inspector> {
+        let d = self.detail()?;
+        Some(Inspector {
+            socket: docker_socket(&d.name),
+            rows: vec![
+                ("런타임", d.runtime),
+                ("VM 종류", d.vm_type),
+                ("마운트", d.mount_type),
+                ("아키텍처", d.arch),
+                ("CPU", d.cpus.to_string()),
+                ("메모리", d.memory),
+                ("디스크", d.disk),
+                ("IP 주소", d.address),
+            ],
+            can_edit: d.actions.edit,
+            can_delete: d.actions.delete,
+        })
+    }
+
+    /// Item count shown next to a tab label, once its list has loaded.
+    pub fn tab_count(&self, tab: Tab, cx: &App) -> Option<usize> {
+        fn len<T>(s: &ListState<T>) -> Option<usize> {
+            match s {
+                ListState::Ready(rows) => Some(rows.len()),
+                _ => None,
+            }
+        }
+        let e = self.engine.read(cx);
+        match tab {
+            Tab::Containers => len(e.containers()),
+            Tab::Images => len(e.images()),
+            Tab::Volumes => len(e.volumes()),
+        }
+    }
+
+    fn act(&mut self, action: HeaderAction, cx: &mut Context<Self>) {
+        match action {
+            HeaderAction::Start => self.start(cx),
+            HeaderAction::Restart => self.restart(cx),
+            HeaderAction::Stop => self.stop(cx),
+        }
+    }
+}
+
+/// Small secondary text (labels, captions).
+fn caption(text: impl Into<SharedString>, p: &Palette) -> Div {
+    div()
+        .text_size(px(font::SMALL.size))
+        .text_color(hsla(p.text_2))
+        .child(text.into())
+}
+
+/// Monospace value text.
+fn mono(text: impl Into<SharedString>, color: crate::theme::Rgb) -> Div {
+    div()
+        .font_family(font::MONO)
+        .text_size(px(font::CODE.size))
+        .text_color(hsla(color))
+        .child(text.into())
+}
+
+/// Section heading (13 px semibold).
+fn heading(text: impl Into<SharedString>, p: &Palette) -> Div {
+    div()
+        .text_size(px(font::BODY.size))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(hsla(p.text))
+        .child(text.into())
+}
+
+/// Half a spacing step: the 2 px gap between sidebar rows.
+fn half_step() -> Pixels {
+    px(metric::SPACE[0] / 2.0)
 }
 
 impl MainView {
     fn sidebar(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected.clone();
+        let loading = self.profiles.is_none() && self.not_installed.is_none();
         let rows = self.rows().into_iter().map(|row| {
             let is_sel = selected.as_ref().is_some_and(|s| s.as_str() == row.name);
             let name = row.name.clone();
+            let busy_since = (row.kind == StatusKind::Busy)
+                .then(|| self.started.iter().find(|(n, _)| n.as_str() == row.name))
+                .flatten()
+                .map(|(_, t)| *t);
+            let trailing = match busy_since {
+                Some(t) => mono(elapsed_text(t), p.busy),
+                None if row.kind == StatusKind::Busy => mono(row.resource_line, p.busy),
+                None => mono(row.resource_line, p.text_2),
+            };
             h_flex()
                 .id(SharedString::from(format!("profile-{}", row.name)))
                 .h(px(metric::ROW))
-                .px(space(2))
+                .px(space(1))
                 .gap(space(1))
-                .rounded(px(metric::RADIUS_SM))
+                .rounded(px(metric::RADIUS_MD))
                 .when(is_sel, |d| d.bg(hsla(p.bg_selected)))
-                .when(!is_sel, |d| d.hover(|s| s.bg(hsla(p.bg_hover))))
+                .when(!is_sel, |d| {
+                    d.hover(|s| s.bg(hsla(p.bg_hover)))
+                        .active(|s| s.bg(hsla(p.bg_pressed)))
+                })
                 .cursor_pointer()
                 .on_click(cx.listener(move |v, _, _, cx| v.select(&name, cx)))
-                .child(status_shape(row.kind, p))
+                .child(status_shape(
+                    SharedString::from(format!("profile-status-{}", row.name)),
+                    status_of(row.kind),
+                    p,
+                ))
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .text_size(px(font::BODY.size))
                         .text_color(hsla(p.text))
+                        .when(is_sel, |d| d.font_weight(FontWeight::MEDIUM))
                         .child(row.name),
                 )
-                .child(
-                    div()
-                        .text_size(px(font::SMALL.size))
-                        .font_family(font::MONO)
-                        .text_color(hsla(p.text_2))
-                        .child(row.resource_line),
-                )
+                .child(trailing)
+        });
+        let skeleton = loading.then(|| {
+            v_flex()
+                .gap(half_step())
+                .child(skeleton_row(&[0.6, 0.25], p))
+                .child(skeleton_row(&[0.45, 0.25], p))
+                .child(skeleton_row(&[0.55, 0.25], p))
         });
         v_flex()
             .w(px(metric::SIDEBAR))
             .flex_none()
             .h_full()
-            .p(space(1))
-            .gap(px(2.))
             .bg(hsla(p.bg_chrome))
             .border_r_1()
             .border_color(hsla(p.border))
+            // Room for the traffic lights (transparent title bar).
+            .child(div().h(px(metric::TITLEBAR)).flex_none())
+            .child(
+                v_flex()
+                    .px(space(1))
+                    .py(space(0))
+                    .gap(half_step())
+                    .child(
+                        h_flex()
+                            .h(px(metric::ROW))
+                            .pl(space(1))
+                            .justify_between()
+                            .child(caption("프로필", p).font_weight(FontWeight::MEDIUM))
+                            .child(
+                                icon_button("new-profile", "+", p)
+                                    .on_click(cx.listener(|v, _, _, cx| v.new_profile(cx))),
+                            ),
+                    )
+                    .children(skeleton)
+                    .children(rows),
+            )
             .child(
                 h_flex()
-                    .px(space(2))
-                    .py(space(1))
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(font::SMALL.size))
-                            .text_color(hsla(p.text_2))
-                            .child("프로필"),
-                    )
-                    .child(
-                        button("new-profile", "새 프로필", true, false, p)
-                            .on_click(cx.listener(|v, _, _, cx| v.new_profile(cx))),
-                    ),
+                    .mt_auto()
+                    .p(space(1))
+                    .pl(space(3))
+                    .border_t_1()
+                    .border_color(hsla(p.border))
+                    .child(mono(
+                        concat!("telima ", env!("CARGO_PKG_VERSION")),
+                        p.text_2,
+                    )),
             )
-            .children(rows)
     }
 
-    fn detail_pane(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let Some(d) = self.detail() else {
-            let msg = if self.profiles.is_empty() {
-                "프로필이 없습니다."
-            } else {
-                "프로필을 선택하세요."
-            };
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(hsla(p.text_2))
-                .child(msg)
-                .into_any_element();
-        };
-        let a = d.actions;
-        let fact = |label: &'static str, value: String| {
-            v_flex()
-                .gap(px(2.))
-                .child(
+    /// Main-column title bar: 프로필 › name (H2).
+    fn titlebar(&self, p: &Palette) -> impl IntoElement {
+        h_flex()
+            .h(px(metric::TITLEBAR))
+            .flex_none()
+            .pl(space(4))
+            .pr(space(1))
+            .gap(space(1))
+            .bg(hsla(p.bg))
+            .text_size(px(font::BODY.size))
+            .child(div().text_color(hsla(p.text_2)).child("프로필"))
+            .when_some(self.crumb(), |el, name| {
+                el.child(div().text_color(hsla(p.text_2)).child("›")).child(
                     div()
-                        .text_size(px(font::SMALL.size))
-                        .text_color(hsla(p.text_2))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .font_family(font::MONO)
-                        .text_size(px(font::CODE.size))
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(hsla(p.text))
-                        .child(value),
+                        .child(name),
                 )
+            })
+    }
+
+    /// Centred message used by the empty / not-installed / no-selection states.
+    fn centred(&self, content: impl IntoElement) -> AnyElement {
+        div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(content)
+            .into_any_element()
+    }
+
+    fn state_pane(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        match self.screen() {
+            Screen::Loading => v_flex()
+                .flex_1()
+                .p(space(4))
+                .gap(space(1))
+                .child(skeleton_row(&[0.3], p))
+                .child(skeleton_row(&[0.9], p))
+                .child(skeleton_row(&[0.8], p))
+                .child(skeleton_row(&[0.85], p))
+                .into_any_element(),
+            Screen::NotInstalled { message, hint } => self.centred(
+                v_flex()
+                    .items_center()
+                    .gap(space(1))
+                    .child(heading(message, p))
+                    .child(caption(
+                        "터미널에서 아래 명령으로 설치한 뒤 다시 열어 주세요.",
+                        p,
+                    ))
+                    .when_some(hint, |el, h| el.child(mono(h, p.text))),
+            ),
+            Screen::Empty => self.centred(
+                v_flex()
+                    .items_center()
+                    .gap(space(2))
+                    .child(heading("프로필이 없습니다.", p))
+                    .child(caption("새 프로필을 만들어 Colima VM을 시작하세요.", p))
+                    .child(
+                        button("empty-new-profile", "새 프로필", ButtonVariant::Primary, p)
+                            .on_click(cx.listener(|v, _, _, cx| v.new_profile(cx))),
+                    ),
+            ),
+            Screen::Create => {
+                let body = self
+                    .editor()
+                    .cloned()
+                    .map(|e| e.into_any_element())
+                    .unwrap_or_else(|| div().into_any_element());
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        h_flex().px(space(4)).pt(space(3)).pb(space(2)).child(
+                            div()
+                                .text_size(px(font::TITLE.size))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("새 프로필"),
+                        ),
+                    )
+                    .child(div().flex_1().min_h_0().child(body))
+                    .into_any_element()
+            }
+            Screen::Profile => self.profile_pane(p, cx),
+        }
+    }
+
+    fn error_banner(&self, p: &Palette) -> Option<Div> {
+        self.error.clone().map(|e| {
+            div()
+                .mx(space(4))
+                .mb(space(2))
+                .px(space(2))
+                .py(space(1))
+                .rounded(px(metric::RADIUS_MD))
+                .bg(hsla(p.err_bg))
+                .border_1()
+                .border_color(hsla(p.err_border))
+                .text_color(hsla(p.err))
+                .text_size(px(font::SMALL.size))
+                .child(e)
+        })
+    }
+
+    fn profile_pane(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(d) = self.detail() else {
+            return self.centred(caption("프로필을 선택하세요.", p));
         };
+        let actions = self.header_actions().into_iter().map(|act| {
+            button(
+                SharedString::from(format!("header-{}", act.label())),
+                act.label(),
+                ButtonVariant::Default,
+                p,
+            )
+            .on_click(cx.listener(move |v, _, _, cx| v.act(act, cx)))
+        });
+        let header = h_flex()
+            .px(space(4))
+            .pt(space(3))
+            .pb(space(2))
+            .gap(space(1))
+            .child(
+                div()
+                    .text_size(px(font::TITLE.size))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hsla(p.text))
+                    .child(d.name.clone()),
+            )
+            .child(status_chip(
+                "header-status",
+                status_of(d.kind),
+                d.status_label,
+                p,
+            ))
+            .child(div().flex_1())
+            .children(actions);
         let tabs = Tab::ALL.into_iter().map(|t| {
             let active = t == self.tab;
-            div()
+            let count = self.tab_count(t, cx);
+            h_flex()
                 .id(t.label())
-                .px(space(2))
-                .h(px(metric::ROW))
-                .flex()
-                .items_center()
+                .h(px(metric::TAB_H))
+                .px(half_step())
+                .mr(space(3))
+                .gap(space(0))
+                .border_b_2()
+                .border_color(if active {
+                    hsla(p.text)
+                } else {
+                    gpui_kit::transparent_black()
+                })
                 .cursor_pointer()
                 .text_size(px(font::BODY.size))
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(hsla(if active { p.text } else { p.text_2 }))
-                .when(active, |d| d.border_b_2().border_color(hsla(p.accent)))
+                .hover(|s| s.text_color(hsla(p.text)))
                 .on_click(cx.listener(move |v, _, _, cx| v.set_tab(t, cx)))
                 .child(t.label())
+                .when_some(count, |el, n| {
+                    el.child(
+                        div()
+                            .font_family(font::MONO)
+                            .text_size(px(font::CODE.size))
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(hsla(p.text_2))
+                            .child(n.to_string()),
+                    )
+                })
         });
         let body: AnyElement = match self.editor() {
             Some(editor) => editor.clone().into_any_element(),
@@ -535,110 +866,114 @@ impl MainView {
             let ended = !log.read(cx).is_running();
             v_flex()
                 .flex_none()
-                .max_h(px(metric::ROW * 12.))
+                .max_h(px(metric::LOG_PANEL_H))
                 .border_b_1()
                 .border_color(hsla(p.border))
                 .when(ended, |el| {
                     el.child(
                         h_flex().px(space(3)).pt(space(1)).justify_end().child(
-                            button("close-progress", "닫기", true, false, p)
+                            button("close-progress", "닫기", ButtonVariant::Ghost, p)
                                 .on_click(cx.listener(|v, _, _, cx| v.close_progress(cx))),
                         ),
                     )
                 })
                 .child(log)
         });
-        v_flex()
+        h_flex()
             .flex_1()
-            .min_w_0()
-            .h_full()
-            .bg(hsla(p.bg))
+            .min_h_0()
+            .items_start()
             .child(
                 v_flex()
-                    .p(space(4))
-                    .gap(space(3))
-                    .border_b_1()
-                    .border_color(hsla(p.border))
-                    .child(
-                        h_flex()
-                            .gap(space(1))
-                            .child(status_shape(d.kind, p))
-                            .child(
-                                div()
-                                    .text_size(px(font::TITLE.size))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(hsla(p.text))
-                                    .child(d.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(font::SMALL.size))
-                                    .text_color(hsla(p.text_2))
-                                    .child(d.status_label),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap(space(5))
-                            .child(fact("CPU", d.cpus.to_string()))
-                            .child(fact("메모리", d.memory.clone()))
-                            .child(fact("디스크", d.disk.clone()))
-                            .child(fact("런타임", d.runtime.clone()))
-                            .child(fact("아키텍처", d.arch.clone()))
-                            .child(fact("주소", d.address.clone())),
-                    )
-                    .child(
-                        h_flex()
-                            .gap(space(1))
-                            .child(
-                                button("start", "시작", a.start, true, p).when(a.start, |b| {
-                                    b.on_click(cx.listener(|v, _, _, cx| v.start(cx)))
-                                }),
-                            )
-                            .child(button("stop", "중지", a.stop, false, p).when(a.stop, |b| {
-                                b.on_click(cx.listener(|v, _, _, cx| v.stop(cx)))
-                            }))
-                            .child(
-                                button("restart", "재시작", a.restart, false, p)
-                                    .when(a.restart, |b| {
-                                        b.on_click(cx.listener(|v, _, _, cx| v.restart(cx)))
-                                    }),
-                            )
-                            .child(button("edit", "편집", a.edit, false, p).when(a.edit, |b| {
-                                b.on_click(cx.listener(|v, _, _, cx| v.edit(cx)))
-                            }))
-                            .child(
-                                button("delete", "삭제", a.delete, false, p).when(a.delete, |b| {
-                                    b.on_click(cx.listener(|v, _, _, cx| v.delete(cx)))
-                                }),
-                            ),
-                    )
-                    .when_some(self.error.clone(), |el, e| {
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(header)
+                    .children(self.error_banner(p))
+                    .children(progress)
+                    .when(self.editor.is_none(), |el| {
                         el.child(
-                            div()
-                                .p(space(1))
-                                .rounded(px(metric::RADIUS_SM))
-                                .bg(hsla(p.err_bg))
-                                .border_1()
-                                .border_color(hsla(p.err_border))
-                                .text_color(hsla(p.err))
-                                .text_size(px(font::SMALL.size))
-                                .child(e),
+                            h_flex()
+                                .px(space(4))
+                                .border_b_1()
+                                .border_color(hsla(p.border))
+                                .children(tabs),
                         )
-                    }),
+                    })
+                    .child(div().flex_1().min_h_0().child(body)),
             )
-            .children(progress)
-            .when(self.editor.is_none(), |el| {
-                el.child(
-                    h_flex()
-                        .px(space(3))
-                        .border_b_1()
-                        .border_color(hsla(p.border))
-                        .children(tabs),
-                )
-            })
-            .child(div().flex_1().min_h_0().child(body))
+            .children(self.inspector_pane(p, cx))
             .into_any_element()
+    }
+
+    /// 260 px 구성 aside: kv rows, 편집 in its header, docker socket, delete zone (H1).
+    fn inspector_pane(&self, p: &Palette, cx: &mut Context<Self>) -> Option<Div> {
+        let ins = self.inspector()?;
+        let edit = if ins.can_edit {
+            button("edit", "편집", ButtonVariant::Default, p)
+                .on_click(cx.listener(|v, _, _, cx| v.edit(cx)))
+        } else {
+            crate::components::button::button_disabled("edit", "편집", p)
+        };
+        let delete = if ins.can_delete {
+            button("delete", "프로필 삭제", ButtonVariant::Danger, p)
+                .on_click(cx.listener(|v, _, _, cx| v.delete(cx)))
+        } else {
+            crate::components::button::button_disabled("delete", "프로필 삭제", p)
+        };
+        let kv = ins.rows.into_iter().map(|(label, value)| {
+            h_flex()
+                .min_h(px(metric::ROW))
+                .gap(space(1))
+                .child(caption(label, p).w(px(metric::KV_LABEL)).flex_none())
+                .child(mono(value, p.text).min_w_0().truncate())
+        });
+        Some(
+            v_flex()
+                .w(px(metric::INSPECTOR))
+                .flex_none()
+                .h_full()
+                .pt(space(2))
+                .px(space(3))
+                .pb(space(3))
+                .bg(hsla(p.bg_chrome))
+                .border_l_1()
+                .border_color(hsla(p.border))
+                .child(
+                    h_flex()
+                        .h(px(metric::ROW))
+                        .mb(space(0))
+                        .justify_between()
+                        .child(heading("구성", p))
+                        .child(edit),
+                )
+                .children(kv)
+                .child(
+                    v_flex()
+                        .py(space(1))
+                        .gap(half_step())
+                        .child(caption("docker 소켓", p))
+                        .child(mono(ins.socket, p.text)),
+                )
+                .child(caption(
+                    "CPU·메모리·디스크를 바꾸면 다시 시작해야 적용됩니다.",
+                    p,
+                ))
+                .child(
+                    v_flex()
+                        .mt_auto()
+                        .pt(space(2))
+                        .gap(space(1))
+                        .border_t_1()
+                        .border_color(hsla(p.border))
+                        .child(heading("프로필 삭제", p))
+                        .child(caption(
+                            "VM 디스크와 컨테이너, 볼륨이 함께 지워집니다. 되돌릴 수 없습니다.",
+                            p,
+                        ))
+                        .child(div().child(delete)),
+                ),
+        )
     }
 }
 
@@ -646,42 +981,34 @@ impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(window);
         let overlay = self.delete_confirm().cloned().map(|confirm| {
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(hsla(p.bg_chrome).opacity(0.6))
-                .child(div().id("delete-confirm").occlude().child(confirm))
+            fade_in(
+                "delete-confirm-scrim",
+                scrim(p)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(div().id("delete-confirm").occlude().child(confirm)),
+            )
         });
-        v_flex()
+        let screen = self.screen();
+        let main = v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(hsla(p.bg))
+            .child(self.titlebar(p))
+            .when(screen != Screen::Profile, |el| {
+                el.children(self.error_banner(p))
+            })
+            .child(self.state_pane(p, cx));
+        h_flex()
             .relative()
             .size_full()
             .bg(hsla(p.bg))
             .font_family(font::SANS)
             .text_color(hsla(p.text))
-            .child(
-                h_flex()
-                    .h(px(metric::TITLEBAR))
-                    .flex_none()
-                    .px(space(4))
-                    .bg(hsla(p.bg_chrome))
-                    .border_b_1()
-                    .border_color(hsla(p.border))
-                    .justify_center()
-                    .text_size(px(font::BODY.size))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(crate::APP_NAME),
-            )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .items_start()
-                    .child(self.sidebar(p, cx))
-                    .child(self.detail_pane(p, cx)),
-            )
+            .child(self.sidebar(p, cx))
+            .child(main)
             .children(overlay)
     }
 }

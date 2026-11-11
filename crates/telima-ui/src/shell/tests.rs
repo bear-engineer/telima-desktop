@@ -299,9 +299,12 @@ fn empty_list_shows_the_empty_state(cx: &mut TestAppContext) {
 fn colima_not_installed_has_its_own_state_with_a_korean_hint(cx: &mut TestAppContext) {
     let f = fixture_unsettled(cx);
     f.view.update(cx, |v, cx| {
-        v.inbox.lock().unwrap().push(Msg::Profiles(Err(AppError::Port(
-            PortError::Unavailable("colima not installed".into()),
-        ))));
+        v.inbox
+            .lock()
+            .unwrap()
+            .push(Msg::Profiles(Err(AppError::Port(PortError::Unavailable(
+                "colima not installed".into(),
+            )))));
         v.pump(cx);
     });
     match f.view.read_with(cx, |v, _| v.screen()) {
@@ -317,9 +320,12 @@ fn colima_not_installed_has_its_own_state_with_a_korean_hint(cx: &mut TestAppCon
 fn errors_are_shown_in_korean_not_as_to_string(cx: &mut TestAppContext) {
     let f = fixture(cx);
     f.view.update(cx, |v, cx| {
-        v.inbox.lock().unwrap().push(Msg::Profiles(Err(AppError::Port(
-            PortError::Failed("exit status 1".into()),
-        ))));
+        v.inbox
+            .lock()
+            .unwrap()
+            .push(Msg::Profiles(Err(AppError::Port(PortError::Failed(
+                "exit status 1".into(),
+            )))));
         v.pump(cx);
     });
     let err = f.view.read_with(cx, |v, _| v.error().map(str::to_owned));
@@ -375,11 +381,23 @@ fn title_crumb_names_the_selected_profile(cx: &mut TestAppContext) {
 fn inspector_lists_the_config_and_the_docker_socket(cx: &mut TestAppContext) {
     let f = fixture(cx);
     f.view.update(cx, |v, cx| v.select("work", cx));
-    let ins = f.view.read_with(cx, |v, _| v.inspector()).expect("구성 aside");
+    let ins = f
+        .view
+        .read_with(cx, |v, _| v.inspector())
+        .expect("구성 aside");
     let labels: Vec<&str> = ins.rows.iter().map(|(l, _)| *l).collect();
     assert_eq!(
         labels,
-        ["런타임", "VM 종류", "마운트", "아키텍처", "CPU", "메모리", "디스크", "IP 주소"]
+        [
+            "런타임",
+            "VM 종류",
+            "마운트",
+            "아키텍처",
+            "CPU",
+            "메모리",
+            "디스크",
+            "IP 주소"
+        ]
     );
     assert_eq!(ins.socket, "~/.colima/work/docker.sock");
     assert!(ins.can_edit && ins.can_delete);
@@ -390,7 +408,9 @@ fn tabs_show_counts_of_loaded_lists(cx: &mut TestAppContext) {
     let f = fixture(cx);
     f.view.update(cx, |v, cx| v.select("work", cx));
     f.settle(cx);
-    let n = f.view.read_with(cx, |v, cx| v.tab_count(Tab::Containers, cx));
+    let n = f
+        .view
+        .read_with(cx, |v, cx| v.tab_count(Tab::Containers, cx));
     assert_eq!(n, Some(1));
     let none = f.view.read_with(cx, |v, cx| v.tab_count(Tab::Volumes, cx));
     assert_eq!(none, None);
