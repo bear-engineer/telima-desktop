@@ -56,12 +56,14 @@ fn mono(s: impl Into<SharedString>, color: Rgb) -> Div {
         .child(s.into())
 }
 
-/// Ellipsis cell (CSS .ell): fixed share of the row, clips with "…" (M2).
-fn cell(w: f32) -> Div {
+/// Ellipsis cell (CSS .ell): grows by its share of the width left after the fixed lead and
+/// actions slots, clips with "…" (M2, N1).
+fn cell(share: f32) -> Div {
     div()
-        .w(relative(w))
+        .flex_basis(px(0.))
+        .flex_grow(share)
+        .flex_shrink_0()
         .min_w_0()
-        .flex_none()
         .overflow_hidden()
         .whitespace_nowrap()
         .text_ellipsis()
@@ -95,9 +97,10 @@ fn header(
         })
 }
 
-/// The row actions slot.
+/// The row actions slot: a fixed width for two icon buttons, so the data columns can never
+/// squeeze it out of the row (N1).
 fn actions_slot() -> Div {
-    h_flex().flex_1()
+    h_flex().flex_none().w(px(metric::BTN_SM * 2.0) + space(0))
 }
 
 fn row(id: impl Into<ElementId>, selected: bool, p: &Palette) -> Stateful<Div> {
