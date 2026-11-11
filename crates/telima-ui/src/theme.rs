@@ -283,6 +283,59 @@ mod tests {
     }
 
     #[test]
+    fn button_states_keep_text_readable() {
+        for a in BOTH {
+            let p = palette(a);
+            for bg in [p.accent_hover, p.accent_pressed] {
+                assert!(p.on_accent.contrast(bg) >= AA, "{a:?}: on_accent on {bg:?}");
+            }
+            for bg in [p.bg_raised, p.bg_hover, p.err_bg] {
+                assert!(p.err.contrast(bg) >= AA, "{a:?}: danger text on {bg:?}");
+            }
+            for bg in [p.bg_hover, p.bg_pressed] {
+                assert!(p.text.contrast(bg) >= AA, "{a:?}: text on {bg:?}");
+                assert!(p.text_2.contrast(bg) >= AA, "{a:?}: ghost text on {bg:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn scrim_matches_the_canvas_per_appearance() {
+        let l = palette(Appearance::Light).scrim;
+        let d = palette(Appearance::Dark).scrim;
+        assert_eq!((l.rgb, l.alpha), (Rgb(0x161618), 0.32));
+        assert_eq!((d.rgb, d.alpha), (Rgb(0x000000), 0.5));
+    }
+
+    #[test]
+    fn motion_is_150_to_200ms_and_eases_out() {
+        use std::time::Duration;
+        assert_eq!(motion::FAST, Duration::from_millis(150));
+        assert_eq!(motion::BASE, Duration::from_millis(200));
+        assert_eq!((motion::ease_out(0.0), motion::ease_out(1.0)), (0.0, 1.0));
+        // Ease-out: ahead of linear in the first half.
+        assert!(motion::ease_out(0.25) > 0.25 && motion::ease_out(0.5) > 0.5);
+        assert!(motion::SPIN > motion::BASE);
+    }
+
+    #[test]
+    fn named_sizes_match_the_canvas() {
+        use metric::*;
+        assert_eq!((DIALOG_W, DIALOG_W_SM, LOG_PANEL_H), (420.0, 360.0, 240.0));
+        assert_eq!(
+            (KV_LABEL, FIELD_LABEL, FIELD_NUM, FIELD_SELECT),
+            (88.0, 96.0, 64.0, 220.0)
+        );
+        assert_eq!((CHIP_H, BTN, BTN_SM, TAB_H), (22.0, 28.0, 24.0, 36.0));
+        assert_eq!((DOT, SKELETON_H, BAR_H, FOCUS_RING), (8.0, 10.0, 4.0, 2.0));
+        assert_eq!((SWITCH_W, SWITCH_H, SWITCH_KNOB), (28.0, 16.0, 12.0));
+        assert_eq!((WINDOW_W, WINDOW_H), (1080.0, 720.0));
+        // Traffic lights (12 px) sit centred in the sidebar's titlebar strip.
+        assert_eq!(TRAFFIC_LIGHT_Y, (TITLEBAR - 12.0) / 2.0);
+        assert_eq!(TRAFFIC_LIGHT_X, 14.0);
+    }
+
+    #[test]
     fn type_scale_has_four_sizes_and_spacing_is_on_the_4pt_grid() {
         use font::*;
         assert_eq!(

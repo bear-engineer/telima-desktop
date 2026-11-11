@@ -1,5 +1,7 @@
 //! GPUI views. Knows view models from `telima-app`, never adapters.
+pub mod components;
 pub mod engine_views;
+pub mod fonts;
 pub mod profile_form;
 pub mod shell;
 pub mod style;
@@ -46,5 +48,21 @@ mod tests {
     fn root_view_can_be_created(cx: &mut TestAppContext) {
         let view = cx.new(|_| RootView);
         view.read_with(cx, |_, _| ());
+    }
+
+    #[gpui_kit::test]
+    fn titlebar_is_transparent_with_traffic_lights_in_the_sidebar_strip(cx: &mut TestAppContext) {
+        use crate::theme::metric;
+        use gpui_kit::{point, px};
+        let options = cx.update(super::main_window_options);
+        let titlebar = options.titlebar.expect("titlebar options");
+        assert!(titlebar.appears_transparent);
+        assert_eq!(
+            titlebar.traffic_light_position,
+            Some(point(
+                px(metric::TRAFFIC_LIGHT_X),
+                px(metric::TRAFFIC_LIGHT_Y)
+            ))
+        );
     }
 }
