@@ -343,7 +343,16 @@ async fn start_stop_ports_and_log_timestamps() {
         assert!(line.timestamp.is_some(), "timestamp: {line:?}");
 
         engine.stop_container(&name).await.expect("stop");
-        let stopped = find(engine.containers().await.expect("containers"));
+        // Older engines (Docker 28 on CI) answer the stop call before the
+        // container list reflects it, so poll the list briefly.
+        let mut stopped = find(engine.containers().await.expect("containers"));
+        for _ in 0..20 {
+            if stopped.state == ContainerState::Exited {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            stopped = find(engine.containers().await.expect("containers"));
+        }
         assert_eq!(stopped.state, ContainerState::Exited);
         engine.remove_container(&name, true).await.expect("remove");
     }
