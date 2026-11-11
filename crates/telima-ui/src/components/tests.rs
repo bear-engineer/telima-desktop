@@ -222,3 +222,22 @@ fn every_icon_has_strokes_inside_the_box() {
         }
     }
 }
+
+#[test]
+fn clock_reads_the_wall_clock_in_unix_millis() {
+    // 2020-01-01T00:00:00Z
+    assert!(super::clock::now().0 > 1_577_836_800_000);
+}
+
+#[test]
+fn banner_tones_keep_text_readable_in_both_themes() {
+    use super::banner::{BannerTone, banner_colors};
+    for a in BOTH {
+        let p = theme::palette(a);
+        for tone in [BannerTone::Error, BannerTone::Warning] {
+            let c = banner_colors(tone, p);
+            assert!(c.text.contrast(c.bg) >= 4.5, "{tone:?} {a:?}");
+        }
+        assert_eq!(banner_colors(BannerTone::Error, p).bg, p.err_bg);
+    }
+}

@@ -7,8 +7,11 @@ use telima_app::runtime::{App, BoxFuture, DynEngine, Spawner};
 use telima_app::testing::{FakeEngine, FakeVm};
 use telima_core::container::{Container, ContainerState};
 use telima_core::profile::{
-    HostOs, MountType, Profile, ProfileName, ProfileSpec, ProfileStatus, Runtime, VmType,
+    HostOs, Mount, MountType, Profile, ProfileName, ProfileSpec, ProfileStatus, Runtime,
+    RuntimeInfo, VmType,
 };
+use telima_core::time::UnixMillis;
+use telima_core::version::{ColimaVersion, LAST_TESTED};
 
 use super::{MainView, Tab};
 use crate::engine_views::ListState;
@@ -102,10 +105,28 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
 }
 
 fn fixture_unsettled(cx: &mut TestAppContext) -> Fixture {
-    let vm = FakeVm {
+    fixture_vm(cx, |_| {})
+}
+
+/// Started 3 h 12 min 30 s ago, Colima 0.10.3, Docker 29.5.2.
+fn running_info() -> RuntimeInfo {
+    let now = crate::components::clock::now();
+    RuntimeInfo {
+        started_at: Some(UnixMillis(now.0 - (3 * 3600 + 12 * 60 + 30) * 1000)),
+        colima: Some(ColimaVersion::new(0, 10, 3)),
+        docker_client: Some("28.0.1".into()),
+        docker_server: Some("29.5.2".into()),
+    }
+}
+
+fn fixture_vm(cx: &mut TestAppContext, tweak: impl FnOnce(&mut FakeVm)) -> Fixture {
+    let mut vm = FakeVm {
         progress_lines: vec!["starting colima".into(), "done".into()],
+        info: running_info(),
+        version: Some(LAST_TESTED),
         ..Default::default()
     };
+    tweak(&mut vm);
     vm.specs.lock().unwrap().push(spec("work"));
     *vm.profiles.lock().unwrap() = vec![
         profile("work", ProfileStatus::Stopped),
@@ -401,7 +422,9 @@ fn inspector_lists_the_config_and_the_docker_socket(cx: &mut TestAppContext) {
             "CPU",
             "메모리",
             "디스크",
-            "IP 주소"
+            "IP 주소",
+            "가동 시간",
+            "Kubernetes"
         ]
     );
     assert_eq!(ins.socket, "~/.colima/work/docker.sock");
@@ -449,4 +472,137 @@ fn header_actions_carry_canvas_icons() {
     assert_eq!(HeaderAction::Start.icon(), Icon::Play);
     assert_eq!(HeaderAction::Stop.icon(), Icon::Stop);
     assert_eq!(HeaderAction::Restart.icon(), Icon::Restart);
+}
+
+#[gpui_kit::test]
+fn header_chip_and_inspector_show_the_uptime_of_a_running_profile(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("default", cx));
+    f.settle(cx);
+    assert!(f.vm.calls().contains(&"runtime_info default".to_owned()));
+    let uptime = f.view.read_with(cx, |v, _| v.uptime());
+    assert_eq!(uptime.as_deref(), Some("가동 3시간 12분"));
+    let ins = f.view.read_with(cx, |v, _| v.inspector()).unwrap();
+    assert!(
+        ins.rows
+            .iter()
+            .any(|(l, v)| *l == "가동 시간" && v == "가동 3시간 12분")
+    );
+    // A stopped profile has no uptime.
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    f.settle(cx);
+    assert_eq!(f.view.read_with(cx, |v, _| v.uptime()), None);
+    let ins = f.view.read_with(cx, |v, _| v.inspector()).unwrap();
+    assert!(ins.rows.iter().any(|(l, v)| *l == "가동 시간" && v == "—"));
+}
+
+#[gpui_kit::test]
+fn sidebar_footer_shows_colima_and_docker_versions(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("default", cx));
+    f.settle(cx);
+    let footer = f.view.read_with(cx, |v, _| v.version_footer());
+    assert_eq!(footer.colima, "Colima 0.10.3");
+    assert_eq!(footer.docker, "Docker 29.5.2");
+}
+
+#[gpui_kit::test]
+fn footer_falls_back_to_the_startup_colima_version(cx: &mut TestAppContext) {
+    let f = fixture_vm(cx, |vm| vm.info = RuntimeInfo::default());
+    f.settle(cx);
+    let footer = f.view.read_with(cx, |v, _| v.version_footer());
+    assert_eq!(footer.colima, format!("Colima {LAST_TESTED}"));
+    assert_eq!(footer.docker, "Docker —");
+}
+
+#[gpui_kit::test]
+fn supported_colima_shows_no_version_notice(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    assert!(f.vm.calls().contains(&"colima_version".to_owned()));
+    assert_eq!(f.view.read_with(cx, |v, _| v.version_notice()), None);
+}
+
+#[gpui_kit::test]
+fn too_old_colima_shows_a_blocking_notice_that_cannot_be_dismissed(cx: &mut TestAppContext) {
+    use telima_app::view::daily::VersionNoticeSeverity;
+    let f = fixture_vm(cx, |vm| vm.version = Some(ColimaVersion::new(0, 9, 0)));
+    f.settle(cx);
+    let n = f.view.read_with(cx, |v, _| v.version_notice()).unwrap();
+    assert_eq!(n.severity, VersionNoticeSeverity::Blocking);
+    assert_eq!(n.title, "Colima 업데이트 필요");
+    assert_eq!(n.hint, Some("brew upgrade colima"));
+    f.view.update(cx, |v, cx| v.dismiss_version_notice(cx));
+    assert!(f.view.read_with(cx, |v, _| v.version_notice()).is_some());
+}
+
+#[gpui_kit::test]
+fn untested_colima_shows_a_soft_warning_that_can_be_dismissed(cx: &mut TestAppContext) {
+    use telima_app::view::daily::VersionNoticeSeverity;
+    let f = fixture_vm(cx, |vm| vm.version = Some(ColimaVersion::new(99, 0, 0)));
+    f.settle(cx);
+    let n = f.view.read_with(cx, |v, _| v.version_notice()).unwrap();
+    assert_eq!(n.severity, VersionNoticeSeverity::Warning);
+    assert_eq!(n.title, "검증되지 않은 Colima 버전");
+    f.view.update(cx, |v, cx| v.dismiss_version_notice(cx));
+    assert_eq!(f.view.read_with(cx, |v, _| v.version_notice()), None);
+}
+
+#[gpui_kit::test]
+fn prune_asks_first_and_confirming_runs_the_cache_prune(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.prune(cx));
+    let confirm = f
+        .view
+        .read_with(cx, |v, _| v.prune_confirm().cloned())
+        .unwrap();
+    assert_eq!(confirm.title, "캐시 정리");
+    f.settle(cx);
+    assert!(!f.vm.calls().contains(&"prune_cache".to_owned()));
+    f.view.update(cx, |v, cx| v.confirm_prune(cx));
+    f.settle(cx);
+    assert!(f.vm.calls().contains(&"prune_cache".to_owned()));
+    assert!(f.view.read_with(cx, |v, _| v.prune_confirm().is_none()));
+}
+
+#[gpui_kit::test]
+fn cancelling_the_prune_confirm_runs_nothing(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.prune(cx));
+    f.view.update(cx, |v, cx| v.cancel_prune(cx));
+    f.settle(cx);
+    assert!(f.view.read_with(cx, |v, _| v.prune_confirm().is_none()));
+    assert!(!f.vm.calls().contains(&"prune_cache".to_owned()));
+}
+
+#[gpui_kit::test]
+fn inspector_lists_mounts_and_kubernetes_from_the_stored_spec(cx: &mut TestAppContext) {
+    use telima_app::view::daily::MountRow;
+    let f = fixture_vm(cx, |vm| {
+        let mut s = vm.specs.lock().unwrap();
+        s[0].mounts = vec![Mount {
+            path: "/opt/src".into(),
+            writable: true,
+        }];
+        s[0].kubernetes = true;
+    });
+    f.settle(cx);
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    f.settle(cx);
+    let ins = f.view.read_with(cx, |v, _| v.inspector()).unwrap();
+    assert_eq!(
+        ins.mounts,
+        [MountRow {
+            path: "/opt/src".into(),
+            mode: "읽기·쓰기"
+        }]
+    );
+    assert!(
+        ins.rows
+            .iter()
+            .any(|(l, v)| *l == "Kubernetes" && v == "사용")
+    );
+    f.view.update(cx, |v, cx| v.select("alpha", cx));
+    f.settle(cx);
+    let ins = f.view.read_with(cx, |v, _| v.inspector()).unwrap();
+    assert!(ins.mounts.is_empty());
 }
