@@ -6898,7 +6898,9 @@ dependencies = [
 name = "telima-app"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "telima-core",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

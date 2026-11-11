@@ -10,5 +10,13 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Fake adapters for tests in this and downstream crates.
+testing = []
+
 [dependencies]
 telima-core.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+futures = { version = "0.3", default-features = false, features = ["executor"] }
