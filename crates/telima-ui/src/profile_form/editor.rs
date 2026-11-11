@@ -714,7 +714,7 @@ impl ProfileEditor {
                 window,
                 p,
             )
-            .flex_1()
+            .w_full()
             .debug_selector({
                 let id = format!("mount-path-{i}");
                 move || id.clone()
@@ -736,34 +736,38 @@ impl ProfileEditor {
             });
             let mode = telima_app::view::daily::mount_rows(std::slice::from_ref(m))[0].mode;
             let remove_id = format!("mount-remove-{i}");
-            h_flex()
-                .gap(space(1))
-                .child(path_box)
-                .child(writable)
-                .child(
-                    div()
-                        .min_w(px(metric::FIELD_NUM))
-                        .text_size(px(font::SMALL.size))
-                        .text_color(hsla(p.text_2))
-                        .child(mode),
-                )
-                .child(
-                    button(
-                        SharedString::from(remove_id.clone()),
-                        "−",
-                        enabled,
-                        Tone::Default,
-                        p,
+            // Path on its own line at the field width, switch and "−" under it (N6).
+            v_flex().gap(space(1)).child(path_box).child(
+                h_flex()
+                    .gap(space(1))
+                    .child(writable)
+                    .child(
+                        div()
+                            .min_w(px(metric::FIELD_NUM))
+                            .text_size(px(font::SMALL.size))
+                            .text_color(hsla(p.text_2))
+                            .child(mode),
                     )
-                    .debug_selector(move || remove_id.clone())
-                    .when(enabled, |b| {
-                        b.on_click(cx.listener(move |v, _, _, cx| v.remove_mount(i, cx)))
-                    }),
-                )
+                    .child(div().flex_1())
+                    .child(
+                        button(
+                            SharedString::from(remove_id.clone()),
+                            "−",
+                            enabled,
+                            Tone::Default,
+                            p,
+                        )
+                        .debug_selector(move || remove_id.clone())
+                        .when(enabled, |b| {
+                            b.on_click(cx.listener(move |v, _, _, cx| v.remove_mount(i, cx)))
+                        }),
+                    ),
+            )
         });
         let can_add = enabled && self.draft.mounts.len() < MOUNT_SWITCH_IDS.len();
         v_flex()
-            .flex_1()
+            .w(px(metric::FIELD_SELECT))
+            .flex_none()
             .gap(space(1))
             .when(self.draft.mounts.is_empty(), |d| {
                 d.child(hint_line(MOUNTS_EMPTY, p))

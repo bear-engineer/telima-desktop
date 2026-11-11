@@ -167,6 +167,11 @@ impl EnginePanel {
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> Result<&'a [T], AnyElement> {
+        if let Some(message) = self.unavailable() {
+            return Err(centered(p)
+                .child(text(message, p.text_2))
+                .into_any_element());
+        }
         match state {
             ListState::Idle => Err(centered(p)
                 .child(text(copy::NO_PROFILE, p.text_2))
@@ -371,13 +376,14 @@ impl EnginePanel {
                         .when(selected, |c| c.font_weight(FontWeight::MEDIUM))
                         .child({
                             // Below the ID breakpoint the short ID moves into this tooltip.
-                            let short = SharedString::from(short_image_id(&r.id));
+                            let tip =
+                                SharedString::from(copy::name_tip(&r.name, &short_image_id(&r.id)));
                             let name = r.id.clone();
                             div()
                                 .id(SharedString::from(format!("ctr-name-{}", r.id)))
                                 .debug_selector(move || format!("ctr-name-{name}"))
                                 .when(!show_id, |c| {
-                                    c.tooltip(crate::components::tooltip::text_tip(short.clone()))
+                                    c.tooltip(crate::components::tooltip::text_tip(tip.clone()))
                                 })
                                 .child(r.name.clone())
                         }),

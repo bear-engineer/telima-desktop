@@ -347,7 +347,7 @@ impl Render for StartProgress {
             .id("progress-log")
             .debug_selector(|| "progress-log".to_string())
             .flex_1()
-            .min_h(px(0.0))
+            .min_h(px(metric::LOG_MIN_H))
             .track_scroll(&self.scroll)
             .overflow_y_scroll()
             .p(space(2))

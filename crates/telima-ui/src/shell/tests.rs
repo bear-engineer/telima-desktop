@@ -266,7 +266,7 @@ fn start_shows_progress_lines_in_the_detail_area(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn switching_to_the_containers_tab_loads_the_selected_profiles_containers(cx: &mut TestAppContext) {
     let f = fixture(cx);
-    f.view.update(cx, |v, cx| v.select("work", cx));
+    f.view.update(cx, |v, cx| v.select("default", cx));
     f.view.update(cx, |v, cx| v.set_tab(Tab::Images, cx));
     f.view.update(cx, |v, cx| v.set_tab(Tab::Containers, cx));
     f.settle(cx);
@@ -276,7 +276,7 @@ fn switching_to_the_containers_tab_loads_the_selected_profiles_containers(cx: &m
         other => panic!("containers not loaded: {other:?}"),
     });
     assert_eq!(names, ["pg-main"]);
-    assert!(f.asked.lock().unwrap().contains(&"work".to_string()));
+    assert!(f.asked.lock().unwrap().contains(&"default".to_string()));
 }
 
 #[gpui_kit::test]
@@ -446,7 +446,8 @@ fn inspector_lists_the_config_and_the_docker_socket(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn tabs_show_counts_of_loaded_lists(cx: &mut TestAppContext) {
     let f = fixture(cx);
-    f.view.update(cx, |v, cx| v.select("work", cx));
+    // Lists load only for a running profile (N2).
+    f.view.update(cx, |v, cx| v.select("default", cx));
     f.settle(cx);
     let n = f
         .view
@@ -1052,7 +1053,7 @@ fn failed_create_keeps_its_row_and_log_until_the_log_is_closed(cx: &mut TestAppC
 /// Like Docker on a stopped VM: the engine factory fails unless Colima lists the profile
 /// Running. Containers: `pg-main`.
 fn parts_engine_needs_running() -> Parts {
-    let mut vm = FakeVm {
+    let vm = FakeVm {
         progress_lines: vec!["done".into()],
         info: running_info(),
         version: Some(LAST_TESTED),

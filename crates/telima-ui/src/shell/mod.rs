@@ -19,8 +19,8 @@ use telima_app::view::daily::{
 use telima_app::view::notice::{NoticeKind, error_text, notice};
 use telima_app::view::time_text::{uptime_label, uptime_value_label};
 use telima_app::view::{
-    Confirm, ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile, profile_actions,
-    profile_detail, profile_rows,
+    Confirm, PROFILE_DELETE_NOTE, ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile,
+    engine_unavailable, profile_actions, profile_detail, profile_rows,
 };
 use telima_core::profile::{Profile, ProfileName, ProfileSpec, ProfileStatus, RuntimeInfo};
 
@@ -323,10 +323,15 @@ impl MainView {
     }
 
     /// Points the engine panel at the selected profile and tab.
+    /// A stopped or busy profile gets a state message instead of a load (N1, N2).
     fn sync_engine(&mut self, cx: &mut Context<Self>) {
         let (profile, tab) = (self.selected.clone(), self.tab);
+        let unavailable = profile.as_ref().and_then(|name| {
+            let status = self.list().iter().find(|p| &p.name == name)?.status.clone();
+            engine_unavailable(&status, self.busy(name))
+        });
         self.engine
-            .update(cx, |e, cx| e.set_target(profile, tab, cx));
+            .update(cx, |e, cx| e.set_target(profile, unavailable, tab, cx));
     }
 
     /// Loads the selected profile's stored spec for the inspector, once per profile.
@@ -540,6 +545,7 @@ impl MainView {
             cx.notify();
         });
         self.progress.insert(name, (progress, sub));
+        self.sync_engine(cx);
         cx.notify();
     }
 
@@ -1395,10 +1401,7 @@ impl MainView {
                         .border_t_1()
                         .border_color(hsla(p.border))
                         .child(heading("프로필 삭제", p))
-                        .child(note(
-                            "VM 디스크와 컨테이너, 볼륨이 함께 지워집니다. 되돌릴 수 없습니다.",
-                            p,
-                        ))
+                        .child(note(PROFILE_DELETE_NOTE, p))
                         .child(div().child(delete)),
                 ),
         )

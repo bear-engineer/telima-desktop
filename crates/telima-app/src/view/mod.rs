@@ -422,13 +422,24 @@ fn volume_delete_label(sizes: impl IntoIterator<Item = Option<u64>>) -> String {
 
 /// Note in the inspector's 프로필 삭제 card; says what the dialog's default (switch off) does.
 pub const PROFILE_DELETE_NOTE: &str =
-    "VM 디스크와 컨테이너, 볼륨이 함께 지워집니다. 되돌릴 수 없습니다.";
+    "프로필과 VM이 지워지며 되돌릴 수 없습니다. 데이터 디스크는 선택해서 함께 지울 수 있습니다.";
 
 /// Message the engine panel shows instead of its lists when Docker cannot answer for the
 /// profile: it is not running, or a lifecycle command is still working on it. `None` when the
 /// lists can load.
-pub fn engine_unavailable(_status: &ProfileStatus, _busy: bool) -> Option<&'static str> {
-    None
+pub fn engine_unavailable(status: &ProfileStatus, busy: bool) -> Option<&'static str> {
+    if busy {
+        return Some("프로필 작업이 끝나면 목록을 불러옵니다.");
+    }
+    match status {
+        ProfileStatus::Running => None,
+        ProfileStatus::Stopped => {
+            Some("프로필이 중지되어 있습니다. 시작하면 컨테이너·이미지·볼륨을 볼 수 있습니다.")
+        }
+        ProfileStatus::Other(_) => {
+            Some("프로필이 실행 중이 아닙니다. 실행 중일 때 목록을 볼 수 있습니다.")
+        }
+    }
 }
 
 pub fn confirm_delete_profile(
@@ -437,22 +448,37 @@ pub fn confirm_delete_profile(
     volume_sizes: &[Option<u64>],
     options: DeleteOptions,
 ) -> Confirm {
+    // Zero counts are left out (N3): "컨테이너 0개" reads oddly.
+    let volumes = volume_sizes.len();
     let (body, label) = if options.data {
+        let mut lost = vec!["VM 디스크".to_owned()];
+        if containers > 0 {
+            lost.push(format!("컨테이너 {containers}개"));
+        }
+        if volumes > 0 {
+            lost.push(format!("볼륨 {volumes}개"));
+        }
+        let lost = if lost.len() == 1 {
+            "VM 디스크와 데이터 디스크".to_owned()
+        } else {
+            lost.join(", ")
+        };
         (
-            format!(
-                "VM 디스크, 컨테이너 {containers}개, 볼륨 {}개가 함께 지워집니다. 되돌릴 수 없습니다.",
-                volume_sizes.len()
-            ),
+            format!("{lost}가 함께 지워집니다. 되돌릴 수 없습니다."),
             volume_delete_label(volume_sizes.iter().copied()),
         )
     } else {
-        (
-            format!(
-                "VM과 컨테이너 {containers}개가 지워집니다. 볼륨 {}개와 이미지가 든 데이터 디스크는 남습니다.",
-                volume_sizes.len()
-            ),
-            "프로필 삭제".to_owned(),
-        )
+        let gone = if containers > 0 {
+            format!("VM과 컨테이너 {containers}개가 지워집니다.")
+        } else {
+            "VM이 지워집니다.".to_owned()
+        };
+        let kept = if volumes > 0 {
+            format!("볼륨 {volumes}개와 이미지가 든 데이터 디스크는 남습니다.")
+        } else {
+            "이미지와 볼륨이 든 데이터 디스크는 남습니다.".to_owned()
+        };
+        (format!("{gone} {kept}"), "프로필 삭제".to_owned())
     };
     Confirm {
         typed_name: Some(name.as_str().to_owned()),

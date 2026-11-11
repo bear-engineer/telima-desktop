@@ -104,6 +104,8 @@ pub struct EnginePanel {
     inbox: Inbox,
     epoch: u64,
     profile: Option<ProfileName>,
+    /// Shown instead of the lists while the profile cannot answer (stopped or busy); no load runs.
+    unavailable: Option<&'static str>,
     tab: Tab,
     containers: ListState<ContainerRow>,
     images: ListState<ImageRow>,
@@ -168,6 +170,7 @@ impl EnginePanel {
             inbox: Inbox::default(),
             epoch: 0,
             profile: None,
+            unavailable: None,
             tab: Tab::Containers,
             containers: ListState::Idle,
             images: ListState::Idle,
@@ -234,12 +237,23 @@ impl EnginePanel {
 
     /// State message shown instead of the lists while the profile cannot answer.
     pub fn unavailable(&self) -> Option<&'static str> {
-        None
+        self.unavailable
     }
 
     /// Shows `tab` of `profile`. A new profile clears every list; an unloaded tab loads.
-    pub fn set_target(&mut self, profile: Option<ProfileName>, tab: Tab, cx: &mut Context<Self>) {
-        if profile != self.profile {
+    /// `unavailable` (from `telima_app::view::engine_unavailable`) replaces the lists with a
+    /// state message; when the profile turns ready again (start, restart, create) or stops
+    /// being ready, the lists are cleared so the next ready state loads them fresh (N1).
+    pub fn set_target(
+        &mut self,
+        profile: Option<ProfileName>,
+        unavailable: Option<&'static str>,
+        tab: Tab,
+        cx: &mut Context<Self>,
+    ) {
+        let readiness_changed = unavailable.is_some() != self.unavailable.is_some();
+        self.unavailable = unavailable;
+        if profile != self.profile || readiness_changed {
             self.epoch += 1;
             self.profile = profile;
             self.containers = ListState::Idle;
@@ -252,11 +266,12 @@ impl EnginePanel {
             self.close_logs(cx);
         }
         self.tab = tab;
-        let idle = match tab {
-            Tab::Containers => matches!(self.containers, ListState::Idle),
-            Tab::Images => matches!(self.images, ListState::Idle),
-            Tab::Volumes => matches!(self.volumes, ListState::Idle),
-        };
+        let idle = self.unavailable.is_none()
+            && match tab {
+                Tab::Containers => matches!(self.containers, ListState::Idle),
+                Tab::Images => matches!(self.images, ListState::Idle),
+                Tab::Volumes => matches!(self.volumes, ListState::Idle),
+            };
         if idle {
             self.load(tab, cx);
         }
@@ -266,6 +281,9 @@ impl EnginePanel {
     /// Reloads the current tab (the error state's retry button).
     pub fn retry(&mut self, cx: &mut Context<Self>) {
         self.notice = None;
+        if self.unavailable.is_some() {
+            return;
+        }
         self.load(self.tab, cx);
     }
 

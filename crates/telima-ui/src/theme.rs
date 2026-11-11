@@ -259,6 +259,9 @@ pub mod metric {
     pub const DIALOG_W_SM: f32 = 360.0;
     /// Console log panel height.
     pub const LOG_PANEL_H: f32 = 240.0;
+    /// Least height of the start/stop log box: six CODE lines plus its padding and border, so a
+    /// running progress never shrinks to one line (N4).
+    pub const LOG_MIN_H: f32 = 6.0 * 18.0 + 2.0 * 8.0 + 2.0;
     /// Skeleton bar height (CSS .skel) and progress bar height (CSS .bar).
     pub const SKELETON_H: f32 = 10.0;
     pub const BAR_H: f32 = 4.0;

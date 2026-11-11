@@ -131,7 +131,7 @@ fn fixture(cx: &mut TestAppContext, tab: Tab) -> Fixture {
     };
     let profile = ProfileName::parse("dev").unwrap();
     fx.view
-        .update(cx, |v, cx| v.set_target(Some(profile), tab, cx));
+        .update(cx, |v, cx| v.set_target(Some(profile), None, tab, cx));
     fx
 }
 
@@ -410,7 +410,9 @@ fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
     let (_, spawner, _, app) = fake_app();
     let (view, cx) = cx.add_window_view(|_, cx| EnginePanel::new(app, cx));
     let profile = ProfileName::parse("dev").unwrap();
-    view.update(cx, |v, cx| v.set_target(Some(profile), Tab::Containers, cx));
+    view.update(cx, |v, cx| {
+        v.set_target(Some(profile), None, Tab::Containers, cx)
+    });
     let main = metric::WINDOW_W - metric::SIDEBAR - metric::INSPECTOR;
     for w in [metric::WINDOW_W, metric::ID_COL_BREAKPOINT, main] {
         cx.simulate_resize(size(px(w), px(metric::WINDOW_H)));
@@ -573,7 +575,9 @@ fn long_image_panel(cx: &mut TestAppContext) -> (Entity<EnginePanel>, &mut Visua
     let main = metric::WINDOW_W - metric::SIDEBAR - metric::INSPECTOR;
     cx.simulate_resize(size(px(main), px(metric::WINDOW_H)));
     let profile = ProfileName::parse("dev").unwrap();
-    view.update(cx, |v, cx| v.set_target(Some(profile), Tab::Containers, cx));
+    view.update(cx, |v, cx| {
+        v.set_target(Some(profile), None, Tab::Containers, cx)
+    });
     spawner.run_all();
     view.update(cx, |v, cx| {
         v.pump(cx);
@@ -785,7 +789,9 @@ fn id_column_follows_a_window_resize_without_another_event(cx: &mut TestAppConte
     let (_, spawner, _, app) = fake_app();
     let (view, cx) = cx.add_window_view(|_, cx| EnginePanel::new(app, cx));
     let profile = ProfileName::parse("dev").unwrap();
-    view.update(cx, |v, cx| v.set_target(Some(profile), Tab::Containers, cx));
+    view.update(cx, |v, cx| {
+        v.set_target(Some(profile), None, Tab::Containers, cx)
+    });
     cx.simulate_resize(size(
         px(metric::ID_COL_BREAKPOINT - 120.0),
         px(metric::WINDOW_H),
