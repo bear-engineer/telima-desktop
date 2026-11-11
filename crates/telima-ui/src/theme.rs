@@ -9,13 +9,22 @@ pub struct Rgb(pub u32);
 impl Rgb {
     /// WCAG 2.x relative luminance.
     pub fn luminance(self) -> f64 {
-        todo!()
+        let channel = |shift: u32| {
+            let c = f64::from((self.0 >> shift) & 0xFF) / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
     }
 
     /// WCAG 2.x contrast ratio between two colors (1.0 to 21.0).
     pub fn contrast(self, other: Rgb) -> f64 {
-        let _ = other;
-        todo!()
+        let (a, b) = (self.luminance(), other.luminance());
+        let (hi, lo) = if a >= b { (a, b) } else { (b, a) };
+        (hi + 0.05) / (lo + 0.05)
     }
 }
 
@@ -59,9 +68,90 @@ pub struct Palette {
 
 /// Palette for `appearance`.
 pub fn palette(appearance: Appearance) -> &'static Palette {
-    let _ = appearance;
-    todo!()
+    match appearance {
+        Appearance::Light => &LIGHT,
+        Appearance::Dark => &DARK,
+    }
 }
+
+/// Neutral ramp shared by both appearances (CSS --gray-*).
+mod gray {
+    use super::Rgb;
+    pub const G0: Rgb = Rgb(0xFFFFFF);
+    pub const G25: Rgb = Rgb(0xFAFAFA);
+    pub const G50: Rgb = Rgb(0xF5F5F6);
+    pub const G100: Rgb = Rgb(0xECECEE);
+    pub const G200: Rgb = Rgb(0xE4E4E7);
+    pub const G300: Rgb = Rgb(0xD1D1D6);
+    pub const G400: Rgb = Rgb(0xA1A1AB);
+    pub const G600: Rgb = Rgb(0x5E5E67);
+    pub const G700: Rgb = Rgb(0x3A3A40);
+    pub const G750: Rgb = Rgb(0x2C2C31);
+    pub const G800: Rgb = Rgb(0x242428);
+    pub const G850: Rgb = Rgb(0x1C1C1F);
+    pub const G900: Rgb = Rgb(0x161618);
+    pub const G950: Rgb = Rgb(0x111113);
+}
+
+const LIGHT: Palette = Palette {
+    bg: gray::G0,
+    bg_sunken: gray::G25,
+    bg_chrome: gray::G50,
+    bg_hover: gray::G100,
+    bg_raised: gray::G0,
+    bg_selected: Rgb(0xEEEBFC),
+    border: gray::G200,
+    border_strong: gray::G300,
+    text: gray::G900,
+    text_2: gray::G600,
+    text_disabled: gray::G400,
+    accent: Rgb(0x6240E0),
+    accent_text: Rgb(0x5634D0),
+    on_accent: gray::G0,
+    focus: Rgb(0x6240E0),
+    ok: Rgb(0x12733A),
+    ok_bg: Rgb(0xE8F5EC),
+    idle: gray::G600,
+    idle_bg: Rgb(0xEFEFF1),
+    busy: Rgb(0x1F5FD1),
+    busy_bg: Rgb(0xE9F0FD),
+    err: Rgb(0xC42B2B),
+    err_bg: Rgb(0xFCECEC),
+    err_border: Rgb(0xEBC4C4),
+    bar: gray::G700,
+    track: gray::G100,
+    skeleton: gray::G100,
+};
+
+const DARK: Palette = Palette {
+    bg: gray::G900,
+    bg_sunken: gray::G950,
+    bg_chrome: gray::G850,
+    bg_hover: gray::G800,
+    bg_raised: gray::G800,
+    bg_selected: Rgb(0x272338),
+    border: gray::G750,
+    border_strong: gray::G700,
+    text: gray::G100,
+    text_2: gray::G400,
+    text_disabled: gray::G600,
+    accent: Rgb(0x6D4AEB),
+    accent_text: Rgb(0xA891FF),
+    on_accent: gray::G0,
+    focus: Rgb(0xA891FF),
+    ok: Rgb(0x3CC37A),
+    ok_bg: Rgb(0x16271D),
+    idle: gray::G400,
+    idle_bg: gray::G800,
+    busy: Rgb(0x6AA3FF),
+    busy_bg: Rgb(0x16213A),
+    err: Rgb(0xFF6E6E),
+    err_bg: Rgb(0x33191A),
+    err_border: Rgb(0x5A2A2B),
+    bar: gray::G300,
+    track: gray::G800,
+    skeleton: gray::G800,
+};
 
 /// Font size and line height in px.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,37 +166,37 @@ pub mod font {
     pub const SANS: &str = "IBM Plex Sans KR";
     pub const MONO: &str = "IBM Plex Mono";
     pub const TITLE: TypeStyle = TypeStyle {
-        size: 0.0,
-        line_height: 0.0,
+        size: 16.0,
+        line_height: 22.0,
     };
     pub const BODY: TypeStyle = TypeStyle {
-        size: 0.0,
-        line_height: 0.0,
+        size: 13.0,
+        line_height: 20.0,
     };
     pub const SMALL: TypeStyle = TypeStyle {
-        size: 0.0,
-        line_height: 0.0,
+        size: 12.0,
+        line_height: 16.0,
     };
     pub const CODE: TypeStyle = TypeStyle {
-        size: 0.0,
-        line_height: 0.0,
+        size: 12.0,
+        line_height: 18.0,
     };
 }
 
 /// Spacing, radii and fixed sizes in px.
 pub mod metric {
-    /// 4pt spacing scale: SPACE[n] = step n.
-    pub const SPACE: [f32; 7] = [0.0; 7];
-    pub const RADIUS_SM: f32 = 0.0;
-    pub const RADIUS_MD: f32 = 0.0;
-    pub const RADIUS_LG: f32 = 0.0;
-    pub const RADIUS_WINDOW: f32 = 0.0;
-    pub const ROW: f32 = 0.0;
-    pub const TITLEBAR: f32 = 0.0;
-    pub const SIDEBAR: f32 = 0.0;
-    pub const INSPECTOR: f32 = 0.0;
-    pub const ICON: f32 = 0.0;
-    pub const ICON_STROKE: f32 = 0.0;
+    /// 4pt spacing scale (CSS --sp-1..--sp-6, --sp-8).
+    pub const SPACE: [f32; 7] = [4.0, 8.0, 12.0, 16.0, 20.0, 24.0, 32.0];
+    pub const RADIUS_SM: f32 = 4.0;
+    pub const RADIUS_MD: f32 = 6.0;
+    pub const RADIUS_LG: f32 = 8.0;
+    pub const RADIUS_WINDOW: f32 = 10.0;
+    pub const ROW: f32 = 28.0;
+    pub const TITLEBAR: f32 = 40.0;
+    pub const SIDEBAR: f32 = 220.0;
+    pub const INSPECTOR: f32 = 260.0;
+    pub const ICON: f32 = 16.0;
+    pub const ICON_STROKE: f32 = 1.5;
 }
 
 #[cfg(test)]
