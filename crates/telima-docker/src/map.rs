@@ -87,6 +87,38 @@ pub fn map_volumes(list: &[Volume], df: &[(String, i64, i64)]) -> Vec<DomainVolu
         .collect()
 }
 
+/// Oldest engine API version whose `/system/df` carries per-volume sizes in the
+/// shape this crate reads (`volume_usage.items`, API 1.52+). Older engines answer
+/// with a top-level `Volumes` array that bollard's model does not decode; decoding
+/// it would need a raw request plus `serde_json` (not a dependency here), so on
+/// those engines sizes stay unknown and only `ref_count` is derived (from the
+/// containers' mounts, see `volume_mount_counts`). Supported range: ref_count on
+/// every engine, sizes on API >= `VOLUME_SIZE_MIN_API`.
+pub const VOLUME_SIZE_MIN_API: (u32, u32) = (1, 52);
+
+/// Whether an engine reporting `api_version` ("1.48") provides volume sizes.
+pub fn supports_volume_sizes(api_version: &str) -> bool {
+    let _ = api_version;
+    todo!()
+}
+
+/// Containers per volume name, from the mounts of every listed container
+/// (running or not). A container mounting a volume twice counts once.
+pub fn volume_mount_counts(containers: &[ContainerSummary]) -> HashMap<String, i64> {
+    let _ = containers;
+    todo!()
+}
+
+/// Fill `ref_count` from mount counts where `df` gave none; a volume no
+/// container mounts has zero references. Known counts and sizes are kept.
+pub fn with_mount_refs(
+    volumes: Vec<DomainVolume>,
+    mounts: &HashMap<String, i64>,
+) -> Vec<DomainVolume> {
+    let _ = mounts;
+    volumes
+}
+
 /// System df response to disk usage per section; missing sections count as zero.
 pub fn map_disk_usage(df: &SystemDataUsageResponse) -> DiskUsage {
     DiskUsage {
@@ -472,5 +504,77 @@ mod tests {
         };
         let line = map_log_output(&out).expect("stdout line");
         assert_eq!(line.text, "fo\u{fffd}");
+    }
+    fn mounted(kind: &str, name: Option<&str>) -> bollard::models::MountPoint {
+        bollard::models::MountPoint {
+            typ: Some(kind.into()),
+            name: name.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    fn with_mounts(mounts: Vec<bollard::models::MountPoint>) -> ContainerSummary {
+        ContainerSummary {
+            mounts: Some(mounts),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mount_counts_count_containers_per_named_volume() {
+        let list = vec![
+            with_mounts(vec![mounted("volume", Some("a")), mounted("bind", None)]),
+            with_mounts(vec![
+                mounted("volume", Some("a")),
+                mounted("volume", Some("b")),
+            ]),
+            with_mounts(vec![
+                mounted("volume", Some("a")),
+                mounted("volume", Some("a")),
+            ]),
+            ContainerSummary::default(),
+        ];
+        let counts = volume_mount_counts(&list);
+        assert_eq!(counts.get("a"), Some(&3));
+        assert_eq!(counts.get("b"), Some(&1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn mount_refs_fill_only_unknown_ref_counts() {
+        let vols = vec![
+            DomainVolume {
+                name: "a".into(),
+                size_bytes: Some(5),
+                ref_count: None,
+            },
+            DomainVolume {
+                name: "idle".into(),
+                size_bytes: None,
+                ref_count: None,
+            },
+            DomainVolume {
+                name: "df".into(),
+                size_bytes: Some(9),
+                ref_count: Some(4),
+            },
+        ];
+        let counts = HashMap::from([("a".to_owned(), 2), ("df".to_owned(), 1)]);
+        let out = with_mount_refs(vols, &counts);
+        assert_eq!((out[0].size_bytes, out[0].ref_count), (Some(5), Some(2)));
+        assert_eq!((out[1].size_bytes, out[1].ref_count), (None, Some(0)));
+        assert!(out[1].is_unused());
+        assert_eq!((out[2].size_bytes, out[2].ref_count), (Some(9), Some(4)));
+    }
+
+    #[test]
+    fn volume_sizes_need_api_1_52() {
+        assert!(supports_volume_sizes("1.52"));
+        assert!(supports_volume_sizes("1.54"));
+        assert!(supports_volume_sizes("2.0"));
+        assert!(!supports_volume_sizes("1.48"));
+        assert!(!supports_volume_sizes("1.9"));
+        assert!(!supports_volume_sizes(""));
+        assert!(!supports_volume_sizes("garbage"));
     }
 }
