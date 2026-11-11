@@ -131,6 +131,13 @@ pub struct MainView {
     last_docker_server: Option<String>,
     /// The toolbar's profile dropdown is open.
     menu_open: bool,
+    /// Keyboard-highlighted dropdown row (see `profile_menu_highlight`).
+    menu_highlight: Option<usize>,
+    /// Focus of the open dropdown, so Escape and the arrow keys reach it.
+    menu_focus: FocusHandle,
+    menu_focus_on_open: bool,
+    /// Start, stop and restart results the tray has not taken yet.
+    ended: Vec<LifecycleEnd>,
     _poll: Task<()>,
 }
 
@@ -173,6 +180,10 @@ impl MainView {
             placeholders: HashMap::new(),
             last_docker_server: None,
             menu_open: false,
+            menu_highlight: None,
+            menu_focus: cx.focus_handle(),
+            menu_focus_on_open: false,
+            ended: Vec::new(),
             _poll: poll,
         };
         view.refresh();
@@ -531,9 +542,23 @@ impl MainView {
         self.pending.insert(name.clone());
         self.started.insert(name.clone(), Instant::now());
         let key = name.clone();
-        let sub = cx.subscribe(&progress, move |v, _, ev: &ProgressEnd, cx| {
+        let sub = cx.subscribe(&progress, move |v, progress, ev: &ProgressEnd, cx| {
             v.pending.remove(&key);
             v.started.remove(&key);
+            // A create keeps its placeholder until here; only start/stop/restart reach the tray.
+            let ok = match ev {
+                ProgressEnd::Done => Some(true),
+                ProgressEnd::Failed(_) => Some(false),
+                ProgressEnd::Cancelled => None,
+            };
+            if let Some(ok) = ok.filter(|_| !v.placeholders.contains_key(&key)) {
+                let cmd = progress.read(cx).cmd();
+                v.ended.push(LifecycleEnd {
+                    name: key.clone(),
+                    cmd,
+                    ok,
+                });
+            }
             // A clean finish needs no log; failures and cancels stay until closed, and so
             // does the sidebar row of a create that Colima does not list.
             match ev {
@@ -1335,6 +1360,9 @@ impl Render for MainView {
         let p = palette(window);
         if self.prune_confirm.is_some() && std::mem::take(&mut self.prune_focus_on_open) {
             window.focus(&self.prune_focus, cx);
+        }
+        if self.menu_open && std::mem::take(&mut self.menu_focus_on_open) {
+            window.focus(&self.menu_focus, cx);
         }
         let overlay = self.delete_confirm().cloned().map(|confirm| {
             fade_in(

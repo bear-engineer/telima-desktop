@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use telima_app::AppCommand;
 use telima_app::view::tray::TrayModel;
-use tray_icon::menu::accelerator::Accelerator;
+use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -44,9 +44,11 @@ impl Container for Submenu {
     }
 }
 
-/// Shortcut hint drawn next to a menu item: ⌘Q on `telima 종료` (canvas 10).
-fn accelerator(_command: &AppCommand) -> Option<Accelerator> {
-    None
+/// Shortcut hint drawn next to a menu item: ⌘Q on `telima 종료` (canvas 10). A status-item
+/// menu only answers its key equivalents while it is open and tracking the keyboard, so this
+/// never fires together with the app's cmd-q binding (crates/telima/src/quit.rs).
+fn accelerator(command: &AppCommand) -> Option<Accelerator> {
+    (*command == AppCommand::Quit).then(|| Accelerator::new(Modifiers::META, Code::KeyQ))
 }
 
 fn append_all(

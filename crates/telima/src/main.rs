@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::{AppContext, QuitMode};
 use telima_app::profiles::Lifecycle;
 use telima_app::runtime::{App, BoxFuture, DynEngine, DynVm, PROFILE_POLL_INTERVAL, Spawner};
-use telima_app::view::tray::{BusyOp, TrayError, tray_model};
+use telima_app::view::tray::{BusyOp, tray_model};
 use telima_app::{AppCommand, AppError};
 use telima_colima::cli::{ColimaCli, TokioRunner};
 use telima_core::ports::PortError;
@@ -183,10 +183,13 @@ fn wire_tray(app: App, cx: &mut gpui_kit::App) {
         return;
     };
     cx.set_quit_mode(QuitMode::Explicit);
+    let failure = Rc::new(RefCell::new(tray::LastFailure::default()));
     {
         let app = app.clone();
+        let failure = failure.clone();
         REOPEN.with(|r| {
             *r.borrow_mut() = Some(Rc::new(move |cx| {
+                failure.borrow_mut().clear();
                 let (mut tracked, mut poll_now) = (tray::Tracked::default(), false);
                 let mut shell = GpuiShell {
                     app: &app,
@@ -219,6 +222,7 @@ fn wire_tray(app: App, cx: &mut gpui_kit::App) {
             cx.background_executor().timer(TICK).await;
             cx.update(|cx| {
                 while let Ok(cmd) = commands.try_recv() {
+                    failure.borrow_mut().on_command(&cmd);
                     let mut shell = GpuiShell {
                         app: &app,
                         cx,
@@ -234,6 +238,11 @@ fn wire_tray(app: App, cx: &mut gpui_kit::App) {
                     }
                 }
                 let view = live_view(cx);
+                if let Some(view) = &view {
+                    for end in view.update(cx, |v, _| v.take_lifecycle_ends()) {
+                        failure.borrow_mut().record(end.name, end.cmd, end.ok);
+                    }
+                }
                 if let Some(selected) = view.as_ref().and_then(|v| v.read(cx).selected().cloned()) {
                     MAIN.with(|m| m.borrow_mut().last_selected = Some(selected));
                 }
@@ -264,7 +273,7 @@ fn wire_tray(app: App, cx: &mut gpui_kit::App) {
                     let slot = polled.clone();
                     drop(app.refresh_profiles(move |r| *slot.lock().unwrap() = Some(r)));
                 }
-                let error = list_failed.then_some(TrayError::List);
+                let error = failure.borrow().error(list_failed);
                 let model = tray_model(&profiles, |n| busy.get(n).copied(), error.as_ref());
                 handle.update(&model);
             });

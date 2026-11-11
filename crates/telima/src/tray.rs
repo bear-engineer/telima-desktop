@@ -140,17 +140,35 @@ pub struct LastFailure(Option<(ProfileName, Lifecycle)>);
 
 impl LastFailure {
     /// 끝난 명령 하나를 반영한다. 실패면 기억하고, 같은 프로필의 성공이면 지운다.
-    pub fn record(&mut self, _name: ProfileName, _cmd: Lifecycle, _ok: bool) {}
+    pub fn record(&mut self, name: ProfileName, cmd: Lifecycle, ok: bool) {
+        if !ok {
+            self.0 = Some((name, cmd));
+        } else if self.0.as_ref().is_some_and(|(n, _)| *n == name) {
+            self.0 = None;
+        }
+    }
 
     /// 트레이에서 고른 명령을 본다. 창 열기(오류 행 포함)면 지운다.
-    pub fn on_command(&mut self, _cmd: &AppCommand) {}
+    pub fn on_command(&mut self, cmd: &AppCommand) {
+        if *cmd == AppCommand::OpenWindow {
+            self.clear();
+        }
+    }
 
     /// 사용자가 창을 열면(Dock 클릭) 지운다.
-    pub fn clear(&mut self) {}
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
 
     /// 트레이에 보일 오류. 명령 실패가 목록 읽기 실패보다 앞선다.
     pub fn error(&self, list_failed: bool) -> Option<TrayError> {
-        list_failed.then_some(TrayError::List)
+        match &self.0 {
+            Some((name, cmd)) => Some(TrayError::Lifecycle {
+                name: name.clone(),
+                cmd: *cmd,
+            }),
+            None => list_failed.then_some(TrayError::List),
+        }
     }
 }
 

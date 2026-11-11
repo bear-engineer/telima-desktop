@@ -111,8 +111,8 @@ fn fixed_item(label: &str, command: AppCommand) -> CommandItem {
 }
 
 /// Tooltip of the toolbar profile dropdown: `프로필 선택: default, 실행 중`.
-pub fn profile_picker_label(_name: &str, _kind: StatusKind) -> String {
-    String::new()
+pub fn profile_picker_label(name: &str, kind: StatusKind) -> String {
+    format!("{PROFILE_PICKER}: {name}, {}", kind.label())
 }
 
 fn error_label(error: &TrayError) -> String {

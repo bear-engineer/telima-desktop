@@ -5,19 +5,22 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, MouseMoveEvent, ParentElement, SharedString, Stateful, StatefulInteractiveElement,
-    Styled, Window, WindowControlArea, deferred, div, px,
+    KeyDownEvent, MouseButton, MouseMoveEvent, ParentElement, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, deferred, div, px,
 };
 use telima_app::AppCommand;
 use telima_app::profiles::Lifecycle;
 use telima_app::view::StatusKind;
-use telima_app::view::tray::{BusyOp, NEW_PROFILE_MENU, ToolbarActions, toolbar_actions};
+use telima_app::view::tray::{
+    BusyOp, CommandItem, NEW_PROFILE_MENU, ToolbarActions, profile_picker_label, toolbar_actions,
+};
 use telima_core::profile::ProfileName;
 
 use super::{MainView, Screen, elapsed_text, half_step, status_of};
 use crate::components::button::{ButtonVariant, button_with_icon, icon_button};
 use crate::components::icons::{Icon, icon};
 use crate::components::status::status_shape;
+use crate::components::tooltip::text_tip;
 use crate::style::{hsla, space};
 use crate::theme::{Palette, font, metric};
 
@@ -80,13 +83,13 @@ impl MainView {
     /// Start, stop and restart results since the last call, oldest first. Cancels and
     /// creates are left out.
     pub fn take_lifecycle_ends(&mut self) -> Vec<LifecycleEnd> {
-        Vec::new()
+        std::mem::take(&mut self.ended)
     }
 
     /// Keyboard-highlighted row of the open dropdown: a profile index, or one past the last
     /// profile for 새 프로필….
     pub fn profile_menu_highlight(&self) -> Option<usize> {
-        None
+        self.menu_highlight.filter(|_| self.menu_open)
     }
 
     /// Selects `name` once the profile list arrives (a reopened window keeps the last
@@ -141,6 +144,30 @@ impl MainView {
 
     pub fn toggle_profile_menu(&mut self, cx: &mut Context<Self>) {
         self.menu_open = !self.menu_open;
+        self.menu_focus_on_open = self.menu_open;
+        let current = self
+            .rows()
+            .iter()
+            .position(|r| self.selected.as_ref().is_some_and(|s| s.as_str() == r.name));
+        self.menu_highlight = Some(current.unwrap_or(0));
+        cx.notify();
+    }
+
+    /// Escape closes the open dropdown, up/down move the highlight, Enter picks it.
+    fn profile_menu_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        // One past the last profile is 새 프로필….
+        let at = self.menu_highlight.unwrap_or(0).min(rows.len());
+        match key {
+            "escape" => self.close_profile_menu(cx),
+            "up" => self.menu_highlight = Some(at.saturating_sub(1)),
+            "down" => self.menu_highlight = Some((at + 1).min(rows.len())),
+            "enter" => match rows.get(at) {
+                Some(row) => self.pick_profile(&row.name, cx),
+                None => self.run_command(&AppCommand::NewProfile, cx),
+            },
+            _ => return,
+        }
         cx.notify();
     }
 
@@ -225,8 +252,8 @@ impl MainView {
                 command_button(el, item.command, cx)
             })
             .collect();
-        let refresh = ghost_button(actions.refresh.command, p, cx);
-        let new_profile = ghost_button(actions.new_profile.command, p, cx);
+        let refresh = ghost_button(actions.refresh, p, cx);
+        let new_profile = ghost_button(actions.new_profile, p, cx);
         h_flex()
             .h(px(metric::TITLEBAR))
             .flex_none()
@@ -271,6 +298,7 @@ impl MainView {
             .when(open, |d| d.bg(hsla(p.bg_hover)))
             .hover(|s| s.bg(hsla(p.bg_hover)))
             .active(|s| s.bg(hsla(p.bg_pressed)))
+            .tooltip(text_tip(profile_picker_label(&row.name, row.kind).into()))
             .on_click(cx.listener(|v, _, _, cx| v.toggle_profile_menu(cx)))
             .child(status_shape(
                 "toolbar-profile-status",
@@ -280,8 +308,15 @@ impl MainView {
             .child(div().min_w_0().truncate().child(row.name))
             .child(icon(Icon::Chevron, hsla(p.text_2)));
         let menu = self.profile_menu().map(|rows| {
-            let items: Vec<_> = rows.into_iter().map(|r| self.menu_row(r, p, cx)).collect();
+            let highlight = self.profile_menu_highlight();
+            let last = rows.len();
+            let items: Vec<_> = rows
+                .into_iter()
+                .enumerate()
+                .map(|(i, r)| self.menu_row(r, highlight == Some(i), p, cx))
+                .collect();
             let new_profile = menu_item(SharedString::from("profile-menu-new"), p)
+                .when(highlight == Some(last), |d| d.bg(hsla(p.bg_hover)))
                 .on_click(cx.listener(|v, _, _, cx| {
                     v.run_command(&AppCommand::NewProfile, cx);
                 }))
@@ -291,6 +326,10 @@ impl MainView {
             deferred(
                 v_flex()
                     .id("profile-menu")
+                    .track_focus(&self.menu_focus)
+                    .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
+                        v.profile_menu_key(ev.keystroke.key.as_str(), cx);
+                    }))
                     .occlude()
                     .absolute()
                     .top(px(metric::BTN + metric::SPACE[0]))
@@ -325,7 +364,13 @@ impl MainView {
         )
     }
 
-    fn menu_row(&self, r: MenuRow, p: &Palette, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn menu_row(
+        &self,
+        r: MenuRow,
+        highlighted: bool,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let status = status_of(r.kind);
         let status_color = match r.kind {
             StatusKind::Stopped => p.text_2,
@@ -333,6 +378,7 @@ impl MainView {
         };
         let name = r.name.clone();
         menu_item(SharedString::from(format!("profile-menu-{}", r.name)), p)
+            .when(highlighted, |d| d.bg(hsla(p.bg_hover)))
             .on_click(cx.listener(move |v, _, _, cx| v.pick_profile(&name, cx)))
             .child(check_slot(r.current, p))
             .child(status_shape(
@@ -380,10 +426,15 @@ fn command_button(el: Stateful<Div>, cmd: AppCommand, cx: &mut Context<MainView>
         .on_click(cx.listener(move |v, _, _, cx| v.run_command(&cmd, cx)))
 }
 
-/// Square ghost icon button (refresh, new profile).
-fn ghost_button(cmd: AppCommand, p: &Palette, cx: &mut Context<MainView>) -> Stateful<Div> {
-    let glyph = icon(lifecycle_icon(&cmd), hsla(p.text_2));
-    command_button(icon_button(command_id(&cmd), glyph, p), cmd, cx)
+/// Square ghost icon button (refresh, new profile); its label is the tooltip.
+fn ghost_button(item: CommandItem, p: &Palette, cx: &mut Context<MainView>) -> Stateful<Div> {
+    let glyph = icon(lifecycle_icon(&item.command), hsla(p.text_2));
+    command_button(
+        icon_button(command_id(&item.command), glyph, p),
+        item.command,
+        cx,
+    )
+    .tooltip(text_tip(item.label.into()))
 }
 
 /// Empty toolbar space: drags the window, double-click zooms (macOS titlebar behaviour).
