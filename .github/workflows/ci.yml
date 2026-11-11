@@ -48,3 +48,17 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+  docker-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: linux deps
+        run: |
+          sudo -S -p '' apt-get update
+          sudo -S -p '' apt-get install -y clang libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig-dev libvulkan1 libssl-dev libdbus-1-dev pkg-config
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docker-contract
+      - name: docker contract (ignored tests, real engine)
+        run: TELIMA_DOCKER_SOCKET=/var/run/docker.sock cargo test -p telima-docker --test contract -- --ignored

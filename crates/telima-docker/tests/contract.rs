@@ -2,12 +2,12 @@
 //! `TELIMA_DOCKER_SOCKET=<socket> cargo test -p telima-docker --test contract -- --ignored`
 //! Uses only uniquely named throwaway resources and always cleans up.
 
+use bollard::Docker;
 use bollard::models::{ContainerCreateBody, VolumeCreateRequest};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
     RemoveVolumeOptionsBuilder, StartContainerOptions, WaitContainerOptions,
 };
-use bollard::Docker;
 use futures_util::TryStreamExt;
 use telima_core::container::LogStream;
 use telima_core::ports::{ContainerEngine, PortError};
@@ -16,7 +16,8 @@ use telima_docker::DockerEngine;
 const IMAGE: &str = "alpine:3";
 
 fn socket() -> String {
-    std::env::var("TELIMA_DOCKER_SOCKET").expect("TELIMA_DOCKER_SOCKET must point at a docker socket")
+    std::env::var("TELIMA_DOCKER_SOCKET")
+        .expect("TELIMA_DOCKER_SOCKET must point at a docker socket")
 }
 
 fn unique(prefix: &str) -> String {
@@ -36,7 +37,11 @@ async fn docker_engine_contract() {
     let name = unique("telima-contract");
 
     raw.create_image(
-        Some(CreateImageOptionsBuilder::default().from_image(IMAGE).build()),
+        Some(
+            CreateImageOptionsBuilder::default()
+                .from_image(IMAGE)
+                .build(),
+        ),
         None,
         None,
     )
@@ -75,12 +80,16 @@ async fn docker_engine_contract() {
             .logs(&name, true, &mut |l| lines.push(l))
             .await
             .expect("logs");
-        assert!(lines
-            .iter()
-            .any(|l| l.stream == LogStream::Stdout && l.text.contains("hello-out")));
-        assert!(lines
-            .iter()
-            .any(|l| l.stream == LogStream::Stderr && l.text.contains("hello-err")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.stream == LogStream::Stdout && l.text.contains("hello-out"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.stream == LogStream::Stderr && l.text.contains("hello-err"))
+        );
 
         engine.restart_container(&name).await.expect("restart");
         assert!(!engine.images().await.expect("images").is_empty());
