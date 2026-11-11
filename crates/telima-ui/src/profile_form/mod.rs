@@ -9,3 +9,6 @@ impl Render for ProfileForm {
         div()
     }
 }
+
+#[cfg(test)]
+mod tests;
