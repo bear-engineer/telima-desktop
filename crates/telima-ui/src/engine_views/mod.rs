@@ -232,6 +232,11 @@ impl EnginePanel {
         self.tab
     }
 
+    /// State message shown instead of the lists while the profile cannot answer.
+    pub fn unavailable(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Shows `tab` of `profile`. A new profile clears every list; an unloaded tab loads.
     pub fn set_target(&mut self, profile: Option<ProfileName>, tab: Tab, cx: &mut Context<Self>) {
         if profile != self.profile {

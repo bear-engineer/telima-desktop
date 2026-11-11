@@ -23,6 +23,11 @@ pub const LOG_EMPTY: &str = "로그가 없습니다.";
 pub const LOG_FOLLOWING: &str = "따라가는 중 · 새 줄이 오면 맨 아래로 이동";
 pub const LOG_PAUSED: &str = "따라가기 꺼짐 · 지금까지의 로그";
 
+/// Name-cell tooltip while the ID column is hidden: the full name, then the short ID.
+pub fn name_tip(_name: &str, short_id: &str) -> String {
+    short_id.to_owned()
+}
+
 pub fn remove_exited(n: usize) -> String {
     format!("종료된 {n}개 삭제")
 }

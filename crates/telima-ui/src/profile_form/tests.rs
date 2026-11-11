@@ -576,3 +576,29 @@ fn a_new_mount_row_starts_at_the_field_column(cx: &mut TestAppContext) {
         name.left()
     );
 }
+
+/// Live L6p (N6): the "−" of a mount row ended 37pt past the field edge (FIELD_SELECT).
+#[gpui_kit::test]
+fn a_mount_row_stays_within_the_field_width(cx: &mut TestAppContext) {
+    let (_, _, app) = setup(&[]);
+    let (form, cx) = cx.add_window_view(|_, cx| ProfileEditor::create(app, HostOs::MacOs, cx));
+    cx.simulate_resize(size(px(metric::WINDOW_W), px(metric::WINDOW_H)));
+    cx.run_until_parked();
+    form.update(cx, |f, cx| f.add_mount(cx));
+    cx.run_until_parked();
+    let name = cx.debug_bounds("profile-name").expect("name field");
+    let path = cx.debug_bounds("mount-path-0").expect("mount path");
+    let remove = cx.debug_bounds("mount-remove-0").expect("mount remove");
+    assert!(
+        remove.right() <= name.right() + px(1.0),
+        "remove right {:?} past the field edge {:?}",
+        remove.right(),
+        name.right()
+    );
+    assert!(
+        path.size.width >= name.size.width - px(1.0),
+        "mount path {:?} narrower than the field {:?}",
+        path.size.width,
+        name.size.width
+    );
+}

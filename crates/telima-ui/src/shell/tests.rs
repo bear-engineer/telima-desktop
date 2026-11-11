@@ -1048,3 +1048,158 @@ fn failed_create_keeps_its_row_and_log_until_the_log_is_closed(cx: &mut TestAppC
     assert_ne!(selected.as_deref(), Some("telima-test-fail"));
     assert!(selected.is_some());
 }
+
+/// Like Docker on a stopped VM: the engine factory fails unless Colima lists the profile
+/// Running. Containers: `pg-main`.
+fn parts_engine_needs_running() -> Parts {
+    let mut vm = FakeVm {
+        progress_lines: vec!["done".into()],
+        info: running_info(),
+        version: Some(LAST_TESTED),
+        ..Default::default()
+    };
+    vm.specs.lock().unwrap().push(spec("work"));
+    *vm.profiles.lock().unwrap() = vec![
+        profile("work", ProfileStatus::Stopped),
+        profile("default", ProfileStatus::Running),
+        profile("alpha", ProfileStatus::Stopped),
+    ];
+    let vm = Arc::new(vm);
+    let engine = FakeEngine::default();
+    *engine.containers.lock().unwrap() = vec![container("c1", "pg-main")];
+    let engine = Arc::new(engine);
+    let spawner = Arc::new(QueueSpawner::default());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (seen, status) = (asked.clone(), vm.clone());
+    let app = App::new(
+        vm.clone(),
+        HostOs::MacOs,
+        move |profile: &ProfileName| {
+            seen.lock().unwrap().push(profile.to_string());
+            let running = status
+                .profiles
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| &p.name == profile && p.status == ProfileStatus::Running);
+            if !running {
+                return Err(telima_core::ports::PortError::Unavailable(
+                    "docker daemon not running".into(),
+                ));
+            }
+            let engine: Arc<dyn DynEngine> = engine.clone();
+            Ok(engine)
+        },
+        spawner.clone(),
+    );
+    (vm, spawner, asked, app)
+}
+
+fn set_status(vm: &FakeVm, name: &str, status: ProfileStatus) {
+    for p in vm.profiles.lock().unwrap().iter_mut() {
+        if p.name.as_str() == name {
+            p.status = status.clone();
+        }
+    }
+}
+
+fn container_names(f: &Fixture, cx: &mut TestAppContext) -> Result<Vec<String>, String> {
+    let engine = f.view.read_with(cx, |v, _| v.engine().clone());
+    engine.read_with(cx, |e, _| match e.containers() {
+        ListState::Ready(rows) => Ok(rows.iter().map(|r| r.name.clone()).collect()),
+        other => Err(format!("{other:?}")),
+    })
+}
+
+#[gpui_kit::test]
+fn the_engine_panel_reloads_when_the_selected_profile_turns_running(cx: &mut TestAppContext) {
+    // N1 live: after create/start the panel kept "목록을 불러오지 못했습니다" from the load
+    // that ran while the VM was still stopped or starting.
+    let (vm, spawner, asked, app) = parts_engine_needs_running();
+    let view = cx.new(|cx| MainView::new(app, cx));
+    let f = Fixture {
+        vm,
+        spawner,
+        asked,
+        view,
+    };
+    f.settle(cx);
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    f.settle(cx);
+    f.view.update(cx, |v, cx| v.start(cx));
+    // Colima lists the VM Running once start finishes.
+    set_status(&f.vm, "work", ProfileStatus::Running);
+    for _ in 0..3 {
+        f.settle(cx);
+    }
+    assert_eq!(
+        container_names(&f, cx),
+        Ok(vec!["pg-main".to_string()]),
+        "Stopped -> Running must show the list, not the load error"
+    );
+
+    // Restart: the list reloads once the command is done.
+    let asked_before = f.asked.lock().unwrap().len();
+    f.view.update(cx, |v, cx| v.restart(cx));
+    for _ in 0..3 {
+        f.settle(cx);
+    }
+    assert!(
+        f.asked.lock().unwrap().len() > asked_before,
+        "restart must reload the engine lists"
+    );
+    assert_eq!(container_names(&f, cx), Ok(vec!["pg-main".to_string()]));
+}
+
+#[gpui_kit::test]
+fn a_stopped_profile_shows_a_state_message_not_a_load_error(cx: &mut TestAppContext) {
+    // N2: stopped, starting and stopping profiles showed the red load error.
+    let (vm, spawner, asked, app) = parts_engine_needs_running();
+    let view = cx.new(|cx| MainView::new(app, cx));
+    let f = Fixture {
+        vm,
+        spawner,
+        asked,
+        view,
+    };
+    f.settle(cx);
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    f.settle(cx);
+    let engine = f.view.read_with(cx, |v, _| v.engine().clone());
+    let (failed, message) = engine.read_with(cx, |e, _| {
+        (
+            matches!(e.containers(), ListState::Failed(_)),
+            e.unavailable(),
+        )
+    });
+    assert!(!failed, "a stopped profile must not show the load error");
+    assert_eq!(
+        message,
+        telima_app::view::engine_unavailable(&ProfileStatus::Stopped, false)
+    );
+    assert!(message.is_some());
+    assert!(
+        !f.asked.lock().unwrap().iter().any(|n| n == "work"),
+        "no engine load for a stopped profile"
+    );
+}
+
+#[gpui_kit::test]
+fn the_progress_log_keeps_a_minimum_height_while_running(cx: &mut TestAppContext) {
+    // N4 live: during create the start log showed one line; the engine tabs took the height.
+    let (_, spawner, _, app) = parts(|_| {});
+    let (view, cx) = real_window(app, cx);
+    spawner.run_all();
+    view.update(cx, |v, cx| v.pump(cx));
+    view.update(cx, |v, cx| v.select("work", cx));
+    view.update(cx, |v, cx| v.start(cx));
+    cx.run_until_parked();
+    let log = cx.debug_bounds("progress-log").expect("start log rendered");
+    let min = gpui_kit::px(crate::theme::font::CODE.line_height * 6.0);
+    assert!(
+        log.size.height >= min,
+        "start log {:?} shorter than 6 lines {:?}",
+        log.size.height,
+        min
+    );
+}

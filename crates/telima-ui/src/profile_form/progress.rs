@@ -345,6 +345,7 @@ impl Render for StartProgress {
 
         let log = v_flex()
             .id("progress-log")
+            .debug_selector(|| "progress-log".to_string())
             .flex_1()
             .min_h(px(0.0))
             .track_scroll(&self.scroll)

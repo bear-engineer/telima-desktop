@@ -420,6 +420,17 @@ fn volume_delete_label(sizes: impl IntoIterator<Item = Option<u64>>) -> String {
     }
 }
 
+/// Note in the inspector's 프로필 삭제 card; says what the dialog's default (switch off) does.
+pub const PROFILE_DELETE_NOTE: &str =
+    "VM 디스크와 컨테이너, 볼륨이 함께 지워집니다. 되돌릴 수 없습니다.";
+
+/// Message the engine panel shows instead of its lists when Docker cannot answer for the
+/// profile: it is not running, or a lifecycle command is still working on it. `None` when the
+/// lists can load.
+pub fn engine_unavailable(_status: &ProfileStatus, _busy: bool) -> Option<&'static str> {
+    None
+}
+
 pub fn confirm_delete_profile(
     name: &ProfileName,
     containers: usize,
@@ -868,6 +879,62 @@ mod tests {
         assert_eq!(c.confirm_label, "볼륨 3개, 1.2GB 삭제");
         assert_eq!(c.typed_name.as_deref(), Some("dev"));
         assert!(c.can_confirm);
+    }
+
+    #[test]
+    fn delete_profile_confirm_drops_zero_counts() {
+        // N3: "VM과 컨테이너 0개가 지워집니다. 볼륨 0개와 …" read oddly.
+        let keep = confirm_delete_profile(&name("dev"), 0, &[], DeleteOptions::default());
+        assert_eq!(
+            keep.body,
+            "VM이 지워집니다. 이미지와 볼륨이 든 데이터 디스크는 남습니다."
+        );
+        let keep = confirm_delete_profile(&name("dev"), 2, &[Some(1)], DeleteOptions::default());
+        assert_eq!(
+            keep.body,
+            "VM과 컨테이너 2개가 지워집니다. 볼륨 1개와 이미지가 든 데이터 디스크는 남습니다."
+        );
+        let wipe = confirm_delete_profile(&name("dev"), 0, &[], DeleteOptions { data: true });
+        assert_eq!(
+            wipe.body,
+            "VM 디스크와 데이터 디스크가 함께 지워집니다. 되돌릴 수 없습니다."
+        );
+        let wipe = confirm_delete_profile(&name("dev"), 0, &[None], DeleteOptions { data: true });
+        assert_eq!(
+            wipe.body,
+            "VM 디스크, 볼륨 1개가 함께 지워집니다. 되돌릴 수 없습니다."
+        );
+        for c in [
+            confirm_delete_profile(&name("dev"), 0, &[], DeleteOptions::default()),
+            confirm_delete_profile(&name("dev"), 0, &[], DeleteOptions { data: true }),
+        ] {
+            assert!(!c.body.contains(" 0개"), "{}", c.body);
+        }
+    }
+
+    #[test]
+    fn inspector_delete_note_matches_the_dialog_default() {
+        // N5: the card said volumes go too, while the default keeps the data disk.
+        assert!(
+            !PROFILE_DELETE_NOTE.contains("볼륨이 함께"),
+            "{PROFILE_DELETE_NOTE}"
+        );
+        assert!(
+            PROFILE_DELETE_NOTE.contains("데이터 디스크"),
+            "{PROFILE_DELETE_NOTE}"
+        );
+    }
+
+    #[test]
+    fn engine_panel_waits_for_a_running_idle_profile() {
+        // N1/N2: a stopped or busy profile shows a state message, not a load error.
+        assert_eq!(engine_unavailable(&ProfileStatus::Running, false), None);
+        let stopped = engine_unavailable(&ProfileStatus::Stopped, false).expect("stopped");
+        assert!(stopped.contains("중지"), "{stopped}");
+        let busy = engine_unavailable(&ProfileStatus::Running, true).expect("busy");
+        assert_ne!(busy, stopped);
+        assert!(engine_unavailable(&ProfileStatus::Stopped, true).is_some());
+        assert!(engine_unavailable(&ProfileStatus::Other("Broken".into()), false).is_some());
     }
 
     #[test]

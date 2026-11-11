@@ -819,3 +819,12 @@ fn tooltips_use_the_telima_palette() {
         );
     }
 }
+
+#[test]
+fn name_tooltip_gives_the_full_name_and_the_id() {
+    // N7: below the ID breakpoint names cut to ~10 chars and the tooltip showed only the ID.
+    assert_eq!(
+        super::copy::name_tip("re-vesta-hermes-db", "0123456789ab"),
+        "re-vesta-hermes-db · 0123456789ab"
+    );
+}
