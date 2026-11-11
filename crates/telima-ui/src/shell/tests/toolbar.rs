@@ -1,6 +1,6 @@
 //! U1 window toolbar (canvas 07-09): profile dropdown, drag area, lifecycle buttons or
 //! progress text, divider, refresh, new profile. The header and sidebar carry no actions.
-use gpui_kit::{AppContext, px};
+use gpui_kit::px;
 use telima_app::AppCommand;
 use telima_app::view::StatusKind;
 use telima_app::view::tray::{NEW_PROFILE, REFRESH, toolbar_actions};

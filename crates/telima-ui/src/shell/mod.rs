@@ -1,4 +1,4 @@
-//! Main window shell: title bar, profile sidebar, profile detail, engine tabs.
+//! Main window shell: toolbar, profile sidebar, profile detail, engine tabs.
 //!
 //! Use-case callbacks run on the spawner's thread, so they only push a [`Msg`] into the
 //! inbox; [`MainView::pump`] applies them on the GPUI thread (a poll task calls it).
@@ -18,6 +18,7 @@ use telima_app::view::daily::{
 };
 use telima_app::view::notice::{NoticeKind, error_text, notice};
 use telima_app::view::time_text::{uptime_label, uptime_value_label};
+use telima_app::view::tray::NEW_PROFILE;
 use telima_app::view::{
     Confirm, PROFILE_DELETE_NOTE, ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile,
     engine_unavailable, profile_actions, profile_detail, profile_rows,
@@ -25,11 +26,10 @@ use telima_app::view::{
 use telima_core::profile::{Profile, ProfileName, ProfileSpec, ProfileStatus, RuntimeInfo};
 
 use crate::components::banner::{BannerTone, banner};
-use crate::components::button::{ButtonVariant, button, button_with_icon, icon_button};
+use crate::components::button::{ButtonVariant, button};
 use crate::components::chip::{label_chip, status_chip};
 use crate::components::clock;
 use crate::components::dialog::{fade_in, modal, scrim};
-use crate::components::icons::{Icon, icon};
 use crate::components::paragraph::paragraph;
 use crate::components::skeleton::skeleton_row;
 use crate::components::status::{Status, status_shape};
@@ -129,6 +129,8 @@ pub struct MainView {
     /// Docker server version last reported by any profile; the footer keeps it while the
     /// selected profile's engine is down (F10).
     last_docker_server: Option<String>,
+    /// The toolbar's profile dropdown is open.
+    menu_open: bool,
     _poll: Task<()>,
 }
 
@@ -170,6 +172,7 @@ impl MainView {
             prune_focus_on_open: false,
             placeholders: HashMap::new(),
             last_docker_server: None,
+            menu_open: false,
             _poll: poll,
         };
         view.refresh();
@@ -724,33 +727,6 @@ pub enum Screen {
     Create,
 }
 
-/// Lifecycle buttons in the profile header (only the ones valid for the state).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeaderAction {
-    Start,
-    Restart,
-    Stop,
-}
-
-impl HeaderAction {
-    /// Canvas icon drawn before the label (M1).
-    pub fn icon(self) -> Icon {
-        match self {
-            HeaderAction::Start => Icon::Play,
-            HeaderAction::Restart => Icon::Restart,
-            HeaderAction::Stop => Icon::Stop,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            HeaderAction::Start => "시작",
-            HeaderAction::Restart => "재시작",
-            HeaderAction::Stop => "중지",
-        }
-    }
-}
-
 /// The 구성 inspector of the selected profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inspector {
@@ -812,31 +788,13 @@ impl MainView {
         self.error.as_deref()
     }
 
-    /// Breadcrumb after 프로필 › in the main title bar.
+    /// Title of the create form, or the selected profile's name.
     pub fn crumb(&self) -> Option<String> {
         match self.screen() {
-            Screen::Create => Some("새 프로필".to_owned()),
+            Screen::Create => Some(NEW_PROFILE.to_owned()),
             Screen::Profile => self.selected.as_ref().map(|n| n.to_string()),
             _ => None,
         }
-    }
-
-    /// Header buttons valid for the selected profile's state, in canvas order.
-    pub fn header_actions(&self) -> Vec<HeaderAction> {
-        if self.screen() != Screen::Profile {
-            return Vec::new();
-        }
-        let Some(a) = self.detail().map(|d| d.actions) else {
-            return Vec::new();
-        };
-        [
-            (a.start, HeaderAction::Start),
-            (a.restart, HeaderAction::Restart),
-            (a.stop, HeaderAction::Stop),
-        ]
-        .into_iter()
-        .filter_map(|(ok, act)| ok.then_some(act))
-        .collect()
     }
 
     /// 구성 inspector rows of the selected profile.
@@ -888,14 +846,6 @@ impl MainView {
             Tab::Containers => len(e.containers()),
             Tab::Images => len(e.images()),
             Tab::Volumes => len(e.volumes()),
-        }
-    }
-
-    fn act(&mut self, action: HeaderAction, cx: &mut Context<Self>) {
-        match action {
-            HeaderAction::Start => self.start(cx),
-            HeaderAction::Restart => self.restart(cx),
-            HeaderAction::Stop => self.stop(cx),
         }
     }
 }
@@ -1009,13 +959,7 @@ impl MainView {
                         h_flex()
                             .h(px(metric::ROW))
                             .pl(space(1))
-                            .justify_between()
-                            .child(caption("프로필", p).font_weight(FontWeight::MEDIUM))
-                            .child(
-                                icon_button("new-profile", icon(Icon::Plus, hsla(p.text_2)), p)
-                                    .debug_selector(|| "sidebar-new-profile".to_string())
-                                    .on_click(cx.listener(|v, _, _, cx| v.new_profile(cx))),
-                            ),
+                            .child(caption("프로필", p).font_weight(FontWeight::MEDIUM)),
                     )
                     .children(skeleton)
                     .children(rows),
@@ -1044,27 +988,6 @@ impl MainView {
                                     .on_click(cx.listener(|v, _, _, cx| v.prune(cx))),
                             ),
                     )
-            })
-    }
-
-    /// Main-column title bar: 프로필 › name (H2).
-    fn titlebar(&self, p: &Palette) -> impl IntoElement {
-        h_flex()
-            .h(px(metric::TITLEBAR))
-            .flex_none()
-            .pl(space(4))
-            .pr(space(1))
-            .gap(space(1))
-            .bg(hsla(p.bg))
-            .text_size(px(font::BODY.size))
-            .child(div().text_color(hsla(p.text_2)).child("프로필"))
-            .when_some(self.crumb(), |el, name| {
-                el.child(div().text_color(hsla(p.text_2)).child("›")).child(
-                    div()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(hsla(p.text))
-                        .child(name),
-                )
             })
     }
 
@@ -1118,12 +1041,22 @@ impl MainView {
                     .cloned()
                     .map(|e| e.into_any_element())
                     .unwrap_or_else(|| div().into_any_element());
-                // Inline form at the page inset; the crumb carries 새 프로필 (N4).
+                // Inline form at the page inset under its 새 프로필 title (N4).
                 v_flex()
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
                     .p(space(4))
+                    .gap(space(2))
+                    .when_some(self.crumb(), |el, title| {
+                        el.child(
+                            div()
+                                .text_size(px(font::TITLE.size))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(hsla(p.text))
+                                .child(title),
+                        )
+                    })
                     .child(body)
                     .into_any_element()
             }
@@ -1207,16 +1140,6 @@ impl MainView {
         let Some(d) = self.detail() else {
             return self.centred(caption("프로필을 선택하세요.", p));
         };
-        let actions = self.header_actions().into_iter().map(|act| {
-            button_with_icon(
-                SharedString::from(format!("header-{}", act.label())),
-                act.icon(),
-                act.label(),
-                ButtonVariant::Default,
-                p,
-            )
-            .on_click(cx.listener(move |v, _, _, cx| v.act(act, cx)))
-        });
         let header = h_flex()
             .px(space(4))
             .pt(space(3))
@@ -1236,9 +1159,7 @@ impl MainView {
                     .unwrap_or_else(|| d.status_label.to_string()),
                 p,
             ))
-            .when_some(self.uptime(), |el, up| el.child(label_chip(up, p)))
-            .child(div().flex_1())
-            .children(actions);
+            .when_some(self.uptime(), |el, up| el.child(label_chip(up, p)));
         let tabs = Tab::ALL.into_iter().map(|t| {
             let active = t == self.tab;
             let count = self.tab_count(t, cx);
@@ -1436,7 +1357,7 @@ impl Render for MainView {
             .min_w_0()
             .h_full()
             .bg(hsla(p.bg))
-            .child(self.titlebar(p))
+            .child(self.toolbar(p, cx))
             .children(self.version_banner(p, cx))
             .when(screen != Screen::Profile, |el| {
                 el.children(self.error_banner(p))
@@ -1453,6 +1374,7 @@ impl Render for MainView {
             .children(engine_dialog)
             .children(overlay)
             .children(self.prune_dialog(p, cx))
+            .children(self.menu_backdrop(cx))
     }
 }
 

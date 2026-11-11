@@ -241,6 +241,10 @@ pub mod metric {
     pub const SEGMENT_INSET: f32 = 2.0;
     /// Tab bar height (CSS .tab).
     pub const TAB_H: f32 = 36.0;
+    /// Toolbar profile dropdown menu width (canvas 08).
+    pub const MENU_W: f32 = 248.0;
+    /// Toolbar divider between the lifecycle buttons and refresh / new profile.
+    pub const DIVIDER_H: f32 = 20.0;
     /// Key-value label column (CSS .kv) and form label column.
     pub const KV_LABEL: f32 = 88.0;
     pub const FIELD_LABEL: f32 = 96.0;

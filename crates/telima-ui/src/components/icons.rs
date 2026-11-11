@@ -58,7 +58,26 @@ pub fn strokes(icon: Icon) -> Vec<Vec<(f32, f32)>> {
                 .collect();
             vec![ring, vec![(13., 2.5), (13., 5.5), (10., 5.5)]]
         }
-        Icon::Refresh | Icon::Chevron | Icon::Check => Vec::new(),
+        Icon::Refresh => {
+            // Two clockwise half arcs, each ending in an arrow head, point-symmetric about
+            // the centre (canvas reused 재시작's single arrow; the user asked for another).
+            let arc = |from: f32| -> Vec<(f32, f32)> {
+                (0..=12)
+                    .map(|i| {
+                        let a = (from + 0.85 * i as f32 / 12.) * TAU / 2.;
+                        (8. + 5. * a.cos(), 8. + 5. * a.sin())
+                    })
+                    .collect()
+            };
+            vec![
+                arc(1.),
+                vec![(12.6, 2.9), (12.6, 5.9), (9.6, 5.9)],
+                arc(0.),
+                vec![(3.4, 13.1), (3.4, 10.1), (6.4, 10.1)],
+            ]
+        }
+        Icon::Chevron => vec![vec![(4., 6.5), (8., 10.5), (12., 6.5)]],
+        Icon::Check => vec![vec![(3.5, 8.5), (6.5, 11.5), (12.5, 4.5)]],
     }
 }
 
