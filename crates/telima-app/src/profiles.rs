@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use telima_core::ports::{ProgressSink, VmManager};
 use telima_core::profile::{HostOs, Profile, ProfileName, ProfileSpec};
+use telima_core::rules;
 
 use crate::AppError;
 
@@ -37,7 +38,9 @@ impl<V: VmManager> ProfileService<V> {
 
     /// Profiles sorted by name.
     pub async fn list(&self) -> Result<Vec<Profile>, AppError> {
-        todo!()
+        let mut profiles = self.vm.list().await?;
+        profiles.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(profiles)
     }
 
     /// Validate against the rules, then create. Nothing reaches the VM when invalid.
@@ -46,8 +49,9 @@ impl<V: VmManager> ProfileService<V> {
         spec: &ProfileSpec,
         progress: ProgressSink<'_>,
     ) -> Result<(), AppError> {
-        let _ = (spec, progress);
-        todo!()
+        rules::validate_new(spec, self.os).map_err(AppError::Invalid)?;
+        let _guard = self.claim(&spec.name)?;
+        Ok(self.vm.create(spec, progress).await?)
     }
 
     pub async fn run(
@@ -56,25 +60,58 @@ impl<V: VmManager> ProfileService<V> {
         cmd: Lifecycle,
         progress: ProgressSink<'_>,
     ) -> Result<(), AppError> {
-        let _ = (name, cmd, progress);
-        todo!()
+        let _guard = self.claim(name)?;
+        match cmd {
+            Lifecycle::Start => self.vm.start(name, progress).await?,
+            Lifecycle::Stop => self.vm.stop(name, progress).await?,
+            Lifecycle::Restart => self.vm.restart(name, progress).await?,
+        }
+        Ok(())
     }
 
     /// Change settings of an existing profile; immutable fields and disk shrink are refused.
     pub async fn update(&self, next: &ProfileSpec) -> Result<(), AppError> {
-        let _ = next;
-        todo!()
+        let _guard = self.claim(&next.name)?;
+        let current = self.vm.spec(&next.name).await?;
+        rules::validate_update(&current, next, self.os).map_err(AppError::Invalid)?;
+        Ok(self.vm.update(next).await?)
     }
 
     /// Delete only when `typed` equals the profile name.
     pub async fn delete(&self, name: &ProfileName, typed: &str) -> Result<(), AppError> {
-        let _ = (name, typed);
-        todo!()
+        if typed != name.as_str() {
+            return Err(AppError::ConfirmationMismatch);
+        }
+        let _guard = self.claim(name)?;
+        Ok(self.vm.delete(name).await?)
+    }
+
+    /// Mark `name` busy until the returned guard drops.
+    fn claim(&self, name: &ProfileName) -> Result<BusyGuard<'_>, AppError> {
+        let mut busy = self.busy.lock().unwrap();
+        if !busy.insert(name.clone()) {
+            return Err(AppError::Busy(name.clone()));
+        }
+        Ok(BusyGuard {
+            busy: &self.busy,
+            name: name.clone(),
+        })
     }
 
     /// True while an operation runs on `name`.
     pub fn is_busy(&self, name: &ProfileName) -> bool {
         self.busy.lock().unwrap().contains(name)
+    }
+}
+
+struct BusyGuard<'a> {
+    busy: &'a Mutex<HashSet<ProfileName>>,
+    name: ProfileName,
+}
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.busy.lock().unwrap().remove(&self.name);
     }
 }
 

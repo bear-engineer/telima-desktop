@@ -19,18 +19,30 @@ impl<E: ContainerEngine> EngineService<E> {
 
     /// Running containers first, then by name.
     pub async fn containers(&self) -> Result<Vec<Container>, AppError> {
-        todo!()
+        let mut list = self.engine.containers().await?;
+        list.sort_by(|a, b| {
+            let rank = |c: &Container| u8::from(c.state != ContainerState::Running);
+            rank(a).cmp(&rank(b)).then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(list)
     }
 
     pub async fn restart_container(&self, id: &str) -> Result<(), AppError> {
-        let _ = id;
-        todo!()
+        Ok(self.engine.restart_container(id).await?)
     }
 
     /// Remove a container; a running one is removed only with `force`.
     pub async fn remove_container(&self, id: &str, force: bool) -> Result<(), AppError> {
-        let _ = (id, force);
-        todo!()
+        if !force {
+            let list = self.engine.containers().await?;
+            if let Some(c) = list
+                .iter()
+                .find(|c| c.id == id && c.state == ContainerState::Running)
+            {
+                return Err(AppError::InUse(c.name.clone()));
+            }
+        }
+        Ok(self.engine.remove_container(id, force).await?)
     }
 
     pub async fn logs(
@@ -39,41 +51,58 @@ impl<E: ContainerEngine> EngineService<E> {
         follow: bool,
         sink: &mut (dyn FnMut(LogLine) + Send),
     ) -> Result<(), AppError> {
-        let _ = (id, follow, sink);
-        todo!()
+        Ok(self.engine.logs(id, follow, sink).await?)
     }
 
     /// Largest first.
     pub async fn images(&self) -> Result<Vec<Image>, AppError> {
-        todo!()
+        let mut list = self.engine.images().await?;
+        list.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
+        Ok(list)
     }
 
     /// Images an image prune would remove, for the confirmation dialog.
     pub async fn image_prune_preview(&self) -> Result<Vec<Image>, AppError> {
-        todo!()
+        Ok(self
+            .images()
+            .await?
+            .into_iter()
+            .filter(Image::is_dangling)
+            .collect())
     }
 
     pub async fn prune_images(&self) -> Result<PruneReport, AppError> {
-        todo!()
+        Ok(self.engine.prune_images().await?)
     }
 
     pub async fn volumes(&self) -> Result<Vec<Volume>, AppError> {
-        todo!()
+        let mut list = self.engine.volumes().await?;
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(list)
     }
 
     /// Volumes a volume prune would remove, for the confirmation dialog.
     pub async fn volume_prune_preview(&self) -> Result<Vec<Volume>, AppError> {
-        todo!()
+        Ok(self
+            .volumes()
+            .await?
+            .into_iter()
+            .filter(Volume::is_unused)
+            .collect())
     }
 
     /// Remove a volume that no container references.
     pub async fn remove_volume(&self, name: &str) -> Result<(), AppError> {
-        let _ = name;
-        todo!()
+        let list = self.engine.volumes().await?;
+        match list.iter().find(|v| v.name == name) {
+            Some(v) if v.is_unused() => Ok(self.engine.remove_volume(name).await?),
+            Some(_) => Err(AppError::InUse(name.to_owned())),
+            None => Err(telima_core::ports::PortError::NotFound(name.to_owned()).into()),
+        }
     }
 
     pub async fn prune_volumes(&self) -> Result<PruneReport, AppError> {
-        todo!()
+        Ok(self.engine.prune_volumes().await?)
     }
 }
 
