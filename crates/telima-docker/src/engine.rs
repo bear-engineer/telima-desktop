@@ -189,6 +189,16 @@ impl ContainerEngine for DockerEngine {
     }
 
     async fn disk_usage(&self) -> PortResult<DiskUsage> {
+        let response = self.df_with_retry().await.map_err(map_error)?;
+        Ok(map::map_disk_usage(&response))
+    }
+}
+
+impl DockerEngine {
+    /// `GET /system/df`, retrying transient 5xx answers (see `disk_usage_retry_delay`).
+    async fn df_with_retry(
+        &self,
+    ) -> Result<bollard::models::SystemDataUsageResponse, bollard::errors::Error> {
         let mut attempt = 0;
         loop {
             match self
@@ -196,29 +206,31 @@ impl ContainerEngine for DockerEngine {
                 .df(None::<bollard::query_parameters::DataUsageOptions>)
                 .await
             {
-                Ok(response) => return Ok(map::map_disk_usage(&response)),
+                Ok(response) => return Ok(response),
                 Err(err) => match disk_usage_retry_delay(attempt, &err) {
                     Some(delay) => {
                         attempt += 1;
                         tokio::time::sleep(delay).await;
                     }
-                    None => return Err(map_error(err)),
+                    None => return Err(err),
                 },
             }
         }
     }
-}
 
-impl DockerEngine {
-    /// Per-volume `(name, size, ref_count)` from `GET /system/df` (type=volume).
-    /// The list endpoint carries no usage, so this is the only source. A failed
-    /// `df` yields no usage: the volume list is still returned, with unknown sizes.
+    /// Per-volume `(name, size, ref_count)` from the same `df` call as `disk_usage`.
+    /// The list endpoint carries no usage. A failed `df` yields no usage: the
+    /// volume list is still returned, with unknown sizes.
     async fn volume_usage(&self) -> Vec<(String, i64, i64)> {
-        let options = bollard::query_parameters::DataUsageOptionsBuilder::default()
-            ._type(vec!["volume".to_owned()])
-            .build();
-        let Ok(response) = self.docker.df(Some(options)).await else {
-            return Vec::new();
+        let response = match self.df_with_retry().await {
+            Ok(response) => response,
+            Err(err) => {
+                #[cfg(debug_assertions)]
+                eprintln!("telima-docker: df failed, volume sizes unknown: {err}");
+                #[cfg(not(debug_assertions))]
+                let _ = err;
+                return Vec::new();
+            }
         };
         response
             .volume_usage
