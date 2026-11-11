@@ -26,6 +26,9 @@ serde_json = "1"
 anyhow = "1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# OS tray: tray-icon on macOS, ksni (StatusNotifierItem) on Linux. Exact pins.
+tray-icon = "=0.26.1"
+ksni = "=0.3.7"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

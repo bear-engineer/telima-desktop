@@ -14,6 +14,7 @@ FORBIDDEN = {
     "telima-colima": {"gpui-kit", "bollard", "telima-app", "telima-docker", "telima-ui", "telima"},
     "telima-docker": {"gpui-kit", "telima-app", "telima-colima", "telima-ui", "telima"},
     "telima-ui": {"tokio", "bollard", "telima-colima", "telima-docker", "telima"},
+    "telima-tray": FRAMEWORKS | {"telima-colima", "telima-docker", "telima-ui", "telima"},
 }
 
 
