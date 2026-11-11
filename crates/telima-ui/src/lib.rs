@@ -86,4 +86,15 @@ mod tests {
             ))
         );
     }
+
+    #[gpui_kit::test]
+    fn main_window_carries_the_app_id_for_linux_desktop_matching(cx: &mut TestAppContext) {
+        let options = cx.update(|cx| super::main_window_options(cx));
+        assert_eq!(options.app_id.as_deref(), Some(super::APP_ID));
+    }
+
+    #[test]
+    fn app_icon_is_the_bundled_png() {
+        assert_eq!(&super::APP_ICON_PNG[..8], b"\x89PNG\r\n\x1a\n");
+    }
 }
