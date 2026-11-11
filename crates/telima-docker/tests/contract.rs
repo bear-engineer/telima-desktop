@@ -256,3 +256,104 @@ async fn missing_socket_is_unavailable() {
     let err = DockerEngine::connect("/nonexistent/telima.sock").err();
     assert!(matches!(err, Some(PortError::Unavailable(_))));
 }
+
+#[tokio::test]
+#[ignore = "needs a running docker engine (TELIMA_DOCKER_SOCKET)"]
+async fn start_stop_ports_and_log_timestamps() {
+    use bollard::models::PortBinding as BollardPort;
+    use telima_core::container::{ContainerState, PortProtocol};
+
+    let socket = socket();
+    let engine = DockerEngine::connect(&socket).expect("connect");
+    let raw = Docker::connect_with_unix(&socket, 120, bollard::API_DEFAULT_VERSION).expect("raw");
+    let name = unique("telima-contract-life");
+
+    raw.create_image(
+        Some(
+            CreateImageOptionsBuilder::default()
+                .from_image(IMAGE)
+                .build(),
+        ),
+        None,
+        None,
+    )
+    .try_collect::<Vec<_>>()
+    .await
+    .expect("pull alpine");
+
+    let result = async {
+        raw.create_container(
+            Some(CreateContainerOptionsBuilder::default().name(&name).build()),
+            ContainerCreateBody {
+                image: Some(IMAGE.into()),
+                cmd: Some(vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "echo stamped-line; sleep 300".into(),
+                ]),
+                exposed_ports: Some(vec!["8080/tcp".into()]),
+                host_config: Some(HostConfig {
+                    port_bindings: Some(
+                        [(
+                            "8080/tcp".to_owned(),
+                            Some(vec![BollardPort {
+                                host_ip: Some("127.0.0.1".into()),
+                                host_port: Some("0".into()),
+                            }]),
+                        )]
+                        .into(),
+                    ),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create container");
+
+        let find = |list: Vec<telima_core::container::Container>| {
+            list.into_iter().find(|c| c.name == name).expect("listed")
+        };
+        let created = find(engine.containers().await.expect("containers"));
+        assert_eq!(created.state, ContainerState::Created);
+        assert!(created.created_at.is_some(), "created_at: {created:?}");
+        assert_eq!(created.started_at, None);
+
+        engine.start_container(&name).await.expect("start");
+        let running = find(engine.containers().await.expect("containers"));
+        assert_eq!(running.state, ContainerState::Running);
+        assert!(running.started_at.is_some(), "started_at: {running:?}");
+        let published = running
+            .ports
+            .iter()
+            .find(|p| p.container_port == 8080)
+            .expect("port 8080 listed");
+        assert_eq!(published.protocol, PortProtocol::Tcp);
+        assert!(published.host_port.is_some_and(|p| p > 0), "{published:?}");
+
+        let mut lines = Vec::new();
+        engine
+            .logs(&name, false, &mut |l| lines.push(l))
+            .await
+            .expect("logs");
+        let line = lines
+            .iter()
+            .find(|l| l.text == "stamped-line")
+            .unwrap_or_else(|| panic!("log line without prefix leftovers: {lines:?}"));
+        assert!(line.timestamp.is_some(), "timestamp: {line:?}");
+
+        engine.stop_container(&name).await.expect("stop");
+        let stopped = find(engine.containers().await.expect("containers"));
+        assert_eq!(stopped.state, ContainerState::Exited);
+        engine.remove_container(&name, true).await.expect("remove");
+    }
+    .await;
+
+    let _ = raw
+        .remove_container(
+            &name,
+            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+        )
+        .await;
+    result
+}

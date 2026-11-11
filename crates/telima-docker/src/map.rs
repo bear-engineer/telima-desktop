@@ -213,8 +213,9 @@ mod tests {
     use bollard::container::LogOutput;
     use bollard::models::{
         BuildCacheDiskUsage, ContainerSummary, ContainerSummaryStateEnum, ContainersDiskUsage,
-        ImageDeleteResponseItem, ImagePruneResponse, ImageSummary, ImagesDiskUsage,
-        SystemDataUsageResponse, Volume, VolumePruneResponse, VolumeUsageData, VolumesDiskUsage,
+        ImageDeleteResponseItem, ImagePruneResponse, ImageSummary, ImagesDiskUsage, PortSummary,
+        PortSummaryTypeEnum, SystemDataUsageResponse, Volume, VolumePruneResponse, VolumeUsageData,
+        VolumesDiskUsage,
     };
     use telima_core::container::{ContainerState, LogStream};
 
@@ -485,14 +486,16 @@ mod tests {
             map_log_output(&out),
             Some(LogLine {
                 stream: LogStream::Stdout,
-                text: "hello".into()
+                text: "hello".into(),
+                timestamp: None
             })
         );
         assert_eq!(
             map_log_output(&err),
             Some(LogLine {
                 stream: LogStream::Stderr,
-                text: "boom".into()
+                text: "boom".into(),
+                timestamp: None
             })
         );
     }
@@ -506,7 +509,8 @@ mod tests {
             map_log_output(&c),
             Some(LogLine {
                 stream: LogStream::Stdout,
-                text: "tty".into()
+                text: "tty".into(),
+                timestamp: None
             })
         );
     }
@@ -598,5 +602,152 @@ mod tests {
         assert!(!supports_volume_sizes("1.9"));
         assert!(!supports_volume_sizes(""));
         assert!(!supports_volume_sizes("garbage"));
+    }
+
+    use telima_core::container::{PortBinding, PortProtocol};
+    use telima_core::time::UnixMillis;
+
+    fn port(
+        ip: Option<&str>,
+        private: u16,
+        public: Option<u16>,
+        typ: PortSummaryTypeEnum,
+    ) -> PortSummary {
+        PortSummary {
+            ip: ip.map(str::to_owned),
+            private_port: private,
+            public_port: public,
+            typ: Some(typ),
+        }
+    }
+
+    #[test]
+    fn container_maps_ports_and_created_time() {
+        let summary = ContainerSummary {
+            created: Some(1_700_000_000),
+            ports: Some(vec![
+                port(Some("0.0.0.0"), 80, Some(8080), PortSummaryTypeEnum::TCP),
+                port(None, 53, None, PortSummaryTypeEnum::UDP),
+            ]),
+            ..Default::default()
+        };
+        let c = map_container(&summary);
+        assert_eq!(c.created_at, Some(UnixMillis::from_secs(1_700_000_000)));
+        assert_eq!(c.started_at, None);
+        assert_eq!(
+            c.ports,
+            vec![
+                PortBinding {
+                    host_ip: Some("0.0.0.0".into()),
+                    host_port: Some(8080),
+                    container_port: 80,
+                    protocol: PortProtocol::Tcp,
+                },
+                PortBinding {
+                    host_ip: None,
+                    host_port: None,
+                    container_port: 53,
+                    protocol: PortProtocol::Udp,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn container_without_ports_or_created_has_none() {
+        let c = map_container(&ContainerSummary::default());
+        assert!(c.ports.is_empty());
+        assert_eq!(c.created_at, None);
+    }
+
+    #[test]
+    fn port_without_type_defaults_to_tcp_and_empty_ip_is_unset() {
+        let summary = ContainerSummary {
+            ports: Some(vec![port(Some(""), 9, Some(9), PortSummaryTypeEnum::EMPTY)]),
+            ..Default::default()
+        };
+        let p = &map_container(&summary).ports[0];
+        assert_eq!(p.protocol, PortProtocol::Tcp);
+        assert_eq!(p.host_ip, None);
+    }
+
+    #[test]
+    fn rfc3339_parses_utc_fraction_and_offsets() {
+        assert_eq!(
+            parse_rfc3339("2023-11-14T22:13:20Z"),
+            Some(UnixMillis::from_secs(1_700_000_000))
+        );
+        assert_eq!(
+            parse_rfc3339("2023-11-14T22:13:20.123456789Z"),
+            Some(UnixMillis(1_700_000_000_123))
+        );
+        assert_eq!(
+            parse_rfc3339("2023-11-15T07:13:20.5+09:00"),
+            Some(UnixMillis(1_700_000_000_500))
+        );
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(UnixMillis(0)));
+    }
+
+    #[test]
+    fn rfc3339_rejects_garbage_and_docker_zero_time() {
+        assert_eq!(parse_rfc3339(""), None);
+        assert_eq!(parse_rfc3339("yesterday"), None);
+        assert_eq!(parse_rfc3339("2023-13-40T25:61:61Z"), None);
+        assert_eq!(parse_rfc3339("2023-11-14T22:13:20"), None);
+        assert_eq!(parse_rfc3339("0001-01-01T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn started_at_comes_from_inspect_state() {
+        let inspect = |started: Option<&str>| bollard::models::ContainerInspectResponse {
+            state: Some(bollard::models::ContainerState {
+                started_at: started.map(str::to_owned),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            map_started_at(&inspect(Some("2023-11-14T22:13:20.1Z"))),
+            Some(UnixMillis(1_700_000_000_100))
+        );
+        assert_eq!(map_started_at(&inspect(Some("0001-01-01T00:00:00Z"))), None);
+        assert_eq!(map_started_at(&inspect(None)), None);
+        assert_eq!(
+            map_started_at(&bollard::models::ContainerInspectResponse::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn log_prefix_is_split_into_timestamp() {
+        let (ts, text) = split_log_timestamp("2023-11-14T22:13:20.123456789Z hello world");
+        assert_eq!(ts, Some(UnixMillis(1_700_000_000_123)));
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn log_line_keeps_extra_spaces_and_empty_text() {
+        assert_eq!(
+            split_log_timestamp("2023-11-14T22:13:20Z   indented"),
+            (Some(UnixMillis::from_secs(1_700_000_000)), "  indented")
+        );
+        assert_eq!(
+            split_log_timestamp("2023-11-14T22:13:20Z"),
+            (Some(UnixMillis::from_secs(1_700_000_000)), "")
+        );
+        assert_eq!(
+            split_log_timestamp("2023-11-14T22:13:20Z "),
+            (Some(UnixMillis::from_secs(1_700_000_000)), "")
+        );
+    }
+
+    #[test]
+    fn log_line_without_valid_prefix_is_untouched() {
+        assert_eq!(split_log_timestamp("plain text"), (None, "plain text"));
+        assert_eq!(
+            split_log_timestamp("not-a-time rest"),
+            (None, "not-a-time rest")
+        );
+        assert_eq!(split_log_timestamp(""), (None, ""));
     }
 }

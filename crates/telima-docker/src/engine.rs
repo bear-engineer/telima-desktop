@@ -316,6 +316,20 @@ mod tests {
     }
 
     #[test]
+    fn stop_waits_a_bounded_time_before_kill() {
+        assert_eq!(STOP_TIMEOUT_SECS, 10);
+        assert_eq!(stop_options().t, Some(10));
+    }
+
+    #[test]
+    fn logs_request_carries_timestamps() {
+        let options = logs_options(true);
+        assert!(options.timestamps);
+        assert!(options.follow);
+        assert!(options.stdout && options.stderr);
+    }
+
+    #[test]
     fn status_404_is_not_found() {
         assert!(matches!(
             map_error(server_error(404)),
