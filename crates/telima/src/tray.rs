@@ -26,8 +26,31 @@ pub enum Step {
 
 /// `window_open`: 메인 창이 지금 열려 있는지.
 pub fn plan(cmd: &AppCommand, window_open: bool) -> Vec<Step> {
-    let _ = (cmd, window_open);
-    todo!()
+    let lifecycle = match cmd {
+        AppCommand::Start(n) => Some((n, Lifecycle::Start)),
+        AppCommand::Stop(n) => Some((n, Lifecycle::Stop)),
+        AppCommand::Restart(n) => Some((n, Lifecycle::Restart)),
+        _ => None,
+    };
+    let mut steps = Vec::new();
+    match cmd {
+        AppCommand::OpenWindow => return vec![Step::ShowWindow],
+        AppCommand::Quit => return vec![Step::Quit],
+        // 창이 없으면 트레이 쪽만 다시 읽는다.
+        AppCommand::Refresh if !window_open => return vec![Step::PollNow],
+        _ => {}
+    }
+    if !window_open {
+        steps.push(Step::ShowWindow);
+    }
+    if let Some((name, lc)) = lifecycle {
+        steps.push(Step::Track(name.clone(), lc));
+    }
+    steps.push(Step::Run(cmd.clone()));
+    if *cmd == AppCommand::Refresh {
+        steps.push(Step::PollNow);
+    }
+    steps
 }
 
 /// [`Step`]을 수행하는 쪽.
@@ -41,8 +64,15 @@ pub trait Shell {
 }
 
 pub fn apply(cmd: &AppCommand, shell: &mut impl Shell) {
-    let _ = (cmd, shell);
-    todo!()
+    for step in plan(cmd, shell.window_open()) {
+        match step {
+            Step::ShowWindow => shell.show_window(),
+            Step::Track(name, lc) => shell.track(name, lc),
+            Step::Run(cmd) => shell.run(&cmd),
+            Step::PollNow => shell.poll_now(),
+            Step::Quit => shell.quit(),
+        }
+    }
 }
 
 /// 트레이에서 보낸 작업의 종류를 기억했다가, 앱이 그 프로필을 처리 중일 때 `BusyOp`로 돌려준다.
@@ -51,14 +81,20 @@ pub struct Tracked(HashMap<ProfileName, Lifecycle>);
 
 impl Tracked {
     pub fn insert(&mut self, name: ProfileName, cmd: Lifecycle) {
-        let _ = (name, cmd);
-        todo!()
+        self.0.insert(name, cmd);
     }
 
     /// `is_busy`가 거짓이면 기억을 지우고 `None`. 참이면 기억한 종류, 모르면 `Other`.
     pub fn busy_op(&mut self, name: &ProfileName, is_busy: bool) -> Option<BusyOp> {
-        let _ = (name, is_busy);
-        todo!()
+        if !is_busy {
+            self.0.remove(name);
+            return None;
+        }
+        Some(
+            self.0
+                .get(name)
+                .map_or(BusyOp::Other, |lc| BusyOp::Lifecycle(*lc)),
+        )
     }
 }
 
@@ -71,8 +107,11 @@ pub struct CloseNotice {
 impl CloseNotice {
     /// 트레이가 있고 메인 창이 모두 닫혔고 아직 안 보였으면 참(그리고 보인 것으로 기록).
     pub fn take(&mut self, tray_present: bool, windows_left: usize) -> bool {
-        let _ = (tray_present, windows_left);
-        todo!()
+        if !tray_present || windows_left > 0 || self.shown {
+            return false;
+        }
+        self.shown = true;
+        true
     }
 }
 
@@ -218,6 +257,9 @@ mod tests {
     fn close_notice_never_shows_without_a_tray() {
         let mut n = CloseNotice::default();
         assert!(!n.take(false, 0));
-        assert!(n.take(true, 0), "a skipped check does not use up the notice");
+        assert!(
+            n.take(true, 0),
+            "a skipped check does not use up the notice"
+        );
     }
 }
