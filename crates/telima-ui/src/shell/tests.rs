@@ -312,7 +312,7 @@ fn new_profile_opens_an_empty_create_form(cx: &mut TestAppContext) {
 
 // --- telima-design-r1: layout states (H1 H2 H6 M1 M9 M10 M12) ---
 
-use super::{HeaderAction, Msg, Screen};
+use super::{Msg, Screen};
 use telima_app::AppError;
 use telima_core::ports::PortError;
 
@@ -374,29 +374,15 @@ fn errors_are_shown_in_korean_not_as_to_string(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn header_shows_only_state_valid_actions(cx: &mut TestAppContext) {
-    let f = fixture(cx);
-    f.view.update(cx, |v, cx| v.select("default", cx));
-    assert_eq!(
-        f.view.read_with(cx, |v, _| v.header_actions()),
-        [HeaderAction::Restart, HeaderAction::Stop]
-    );
-    f.view.update(cx, |v, cx| v.select("work", cx));
-    assert_eq!(
-        f.view.read_with(cx, |v, _| v.header_actions()),
-        [HeaderAction::Start]
-    );
-    f.view.update(cx, |v, cx| v.start(cx));
-    assert!(f.view.read_with(cx, |v, _| v.header_actions()).is_empty());
-}
-
-#[gpui_kit::test]
 fn create_mode_replaces_the_header_and_hides_profile_actions(cx: &mut TestAppContext) {
     let f = fixture(cx);
     f.view.update(cx, |v, cx| v.select("default", cx));
     f.view.update(cx, |v, cx| v.new_profile(cx));
     assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Create);
-    assert!(f.view.read_with(cx, |v, _| v.header_actions()).is_empty());
+    assert!(
+        f.view
+            .read_with(cx, |v, _| v.toolbar_actions().lifecycle.is_empty())
+    );
     assert_eq!(
         f.view.read_with(cx, |v, _| v.crumb()).as_deref(),
         Some("새 프로필")
@@ -476,15 +462,6 @@ fn inspector_shows_vm_type_and_mount_from_the_stored_spec(cx: &mut TestAppContex
     f.settle(cx);
     let ins = f.view.read_with(cx, |v, _| v.inspector()).unwrap();
     assert!(ins.rows.iter().any(|(l, v)| *l == "VM 종류" && v == "—"));
-}
-
-#[test]
-fn header_actions_carry_canvas_icons() {
-    use super::HeaderAction;
-    use crate::components::icons::Icon;
-    assert_eq!(HeaderAction::Start.icon(), Icon::Play);
-    assert_eq!(HeaderAction::Stop.icon(), Icon::Stop);
-    assert_eq!(HeaderAction::Restart.icon(), Icon::Restart);
 }
 
 #[gpui_kit::test]
@@ -1028,7 +1005,10 @@ fn failed_create_keeps_its_row_and_log_until_the_log_is_closed(cx: &mut TestAppC
     )));
     assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Profile);
     // Colima does not know the profile: no command can run on the placeholder.
-    assert!(f.view.read_with(cx, |v, _| v.header_actions()).is_empty());
+    assert!(
+        f.view
+            .read_with(cx, |v, _| v.toolbar_actions().lifecycle.is_empty())
+    );
 
     // Another refresh (the poll) does not drop it either.
     f.view.update(cx, |v, _| v.refresh());
@@ -1204,3 +1184,5 @@ fn the_progress_log_keeps_a_minimum_height_while_running(cx: &mut TestAppContext
         min
     );
 }
+
+mod toolbar;

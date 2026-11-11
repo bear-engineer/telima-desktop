@@ -217,7 +217,15 @@ fn paragraph_splits_on_spaces_and_keeps_korean_words_whole() {
 #[test]
 fn every_icon_has_strokes_inside_the_box() {
     use super::icons::{BOX, Icon, strokes};
-    for i in [Icon::Plus, Icon::Play, Icon::Stop, Icon::Restart] {
+    for i in [
+        Icon::Plus,
+        Icon::Play,
+        Icon::Stop,
+        Icon::Restart,
+        Icon::Refresh,
+        Icon::Chevron,
+        Icon::Check,
+    ] {
         let lines = strokes(i);
         assert!(!lines.is_empty(), "{i:?}");
         for (x, y) in lines.into_iter().flatten() {

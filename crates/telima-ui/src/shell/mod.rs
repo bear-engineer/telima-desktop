@@ -1013,6 +1013,7 @@ impl MainView {
                             .child(caption("프로필", p).font_weight(FontWeight::MEDIUM))
                             .child(
                                 icon_button("new-profile", icon(Icon::Plus, hsla(p.text_2)), p)
+                                    .debug_selector(|| "sidebar-new-profile".to_string())
                                     .on_click(cx.listener(|v, _, _, cx| v.new_profile(cx))),
                             ),
                     )
@@ -1454,6 +1455,9 @@ impl Render for MainView {
             .children(self.prune_dialog(p, cx))
     }
 }
+
+mod toolbar;
+pub use toolbar::{MenuRow, lifecycle_icon};
 
 #[cfg(test)]
 mod tests;

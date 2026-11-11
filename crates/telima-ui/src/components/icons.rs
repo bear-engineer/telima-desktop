@@ -21,6 +21,12 @@ pub enum Icon {
     Stop,
     /// `M13 8a5 5 0 1 1-1.46-3.54` + `M13 2.5v3h-3` (재시작).
     Restart,
+    /// Two opposed half-circle arrows (새로고침), distinct from the single-arrow 재시작.
+    Refresh,
+    /// `M4 6.5l4 4 4-4` (드롭다운 펼침).
+    Chevron,
+    /// `M3.5 8.5l3 3 6-7` (현재 항목).
+    Check,
 }
 
 /// Polylines of `icon`, in viewBox units (from Main.dc.html).
@@ -52,6 +58,7 @@ pub fn strokes(icon: Icon) -> Vec<Vec<(f32, f32)>> {
                 .collect();
             vec![ring, vec![(13., 2.5), (13., 5.5), (10., 5.5)]]
         }
+        Icon::Refresh | Icon::Chevron | Icon::Check => Vec::new(),
     }
 }
 
