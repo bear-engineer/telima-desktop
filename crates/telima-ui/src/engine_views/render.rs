@@ -198,11 +198,12 @@ impl EnginePanel {
         };
         let (logs, restart, remove) = (r.id.clone(), r.id.clone(), r.id.clone());
         deferred(
-            // Local origin = the ⋯ button's top-left; the menu's top-right sits at the
-            // button's bottom-right (L6).
+            // The menu is a child of the ⋯ button's wrapper, so its Local origin already sits
+            // at the button's bottom edge: x = button width puts the menu's top-right at the
+            // button's right edge, y = 0 keeps its top edge at the button's bottom (L6).
             anchored()
                 .position_mode(AnchoredPositionMode::Local)
-                .position(point(px(metric::BTN_SM), px(metric::BTN_SM)))
+                .position(point(px(metric::BTN_SM), px(0.)))
                 .anchor(Anchor::TopRight)
                 .child(
                     v_flex()
