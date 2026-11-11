@@ -772,8 +772,10 @@ impl Render for ProfileEditor {
         // profile header (edit) is the only title.
         let frame = v_flex()
             .debug_selector(|| "profile-form-frame".to_string())
-            .w_full()
-            .max_w(px(metric::DIALOG_W))
+            // L7: label column + gap + widest field, so the footer's right edge is the fields'.
+            .w(px(metric::FIELD_LABEL
+                + metric::SPACE[3]
+                + metric::FIELD_SELECT))
             .gap(space(2))
             .text_color(hsla(p.text))
             .font_family(font::SANS)
