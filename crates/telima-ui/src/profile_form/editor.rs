@@ -7,10 +7,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use telima_app::AppError;
 use telima_app::runtime::App as Telima;
+use telima_app::view::notice::error_text;
 use telima_core::profile::{HostOs, MountType, ProfileName, ProfileSpec, Runtime, VmType};
 use telima_core::rules::{self, RuleViolation};
 
 use super::widgets::{Tone, button, edit_text, field_row, text_box};
+use crate::components::dialog::{dialog_frame, fade_in};
+use crate::components::segmented::segmented;
+use crate::components::switch::switch;
 use crate::style::{hsla, palette, space};
 use crate::theme::{font, metric};
 
@@ -450,7 +454,7 @@ impl ProfileEditor {
                                 cx.emit(FormEvent::Saved(name));
                             }
                         }
-                        Err(e) => self.save_error = Some(e.to_string()),
+                        Err(e) => self.save_error = Some(error_text(&e)),
                     }
                 }
             }
@@ -501,7 +505,7 @@ impl ProfileEditor {
                     SharedString::from(format!("{id}-dec")),
                     "−",
                     can_dec,
-                    Tone::Plain,
+                    Tone::Default,
                     p,
                 )
                 .when(can_dec, |b| {
@@ -510,7 +514,7 @@ impl ProfileEditor {
             )
             .child(
                 div()
-                    .min_w(px(64.0))
+                    .min_w(px(metric::FIELD_NUM))
                     .text_color(hsla(p.text))
                     .text_size(px(font::BODY.size))
                     .font_family(font::MONO)
@@ -521,7 +525,7 @@ impl ProfileEditor {
                     SharedString::from(format!("{id}-inc")),
                     "+",
                     can_inc,
-                    Tone::Plain,
+                    Tone::Default,
                     p,
                 )
                 .when(can_inc, |b| {
@@ -544,22 +548,19 @@ impl ProfileEditor {
             locked,
             set,
         } = c;
-        h_flex().gap(space(1)).children(options.iter().map(|&o| {
-            let on = o == selected;
-            let enabled = !locked && !self.saving;
-            let tone = if on { Tone::Primary } else { Tone::Plain };
-            // A locked choice still shows which value is set.
-            let b = button(
-                SharedString::from(format!("{id}-{}", label(o))),
-                label(o),
-                enabled || on,
-                tone,
-                p,
-            );
-            b.when(enabled && !on, |b| {
-                b.on_click(cx.listener(move |v, _, _, cx| set(v, o, cx)))
-            })
-        }))
+        let enabled = !locked && !self.saving;
+        let labels = options
+            .iter()
+            .map(|&o| SharedString::from(label(o)))
+            .collect();
+        let index = options.iter().position(|&o| o == selected).unwrap_or(0);
+        let this = cx.entity().downgrade();
+        // A locked choice still shows which value is set; clicks do nothing.
+        segmented(id, labels, index, p, move |i, _, cx| {
+            if enabled {
+                let _ = this.update(cx, |v, cx| set(v, options[i], cx));
+            }
+        })
     }
 
     fn toggle(
@@ -572,10 +573,12 @@ impl ProfileEditor {
         p: &crate::theme::Palette,
     ) -> Stateful<Div> {
         let enabled = enabled && !self.saving;
-        let label = if on { "켬" } else { "끔" };
-        let tone = if on { Tone::Primary } else { Tone::Plain };
-        button(id, label, enabled, tone, p).when(enabled, |b| {
-            b.on_click(cx.listener(move |v, _, _, cx| set(v, !on, cx)))
+        let this = cx.entity().downgrade();
+        // An unavailable switch keeps its state visible; the field hint says why.
+        switch(id, on, p, move |next, _, cx| {
+            if enabled {
+                let _ = this.update(cx, |v, cx| set(v, next, cx));
+            }
         })
     }
 }
@@ -594,7 +597,7 @@ impl Render for ProfileEditor {
             window,
             p,
         )
-        .w(px(220.0))
+        .w(px(metric::FIELD_SELECT))
         .when(!name_locked, |b| {
             b.on_click(cx.listener(|v, _, window, cx| window.focus(&v.name_focus, cx)))
                 .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
@@ -748,7 +751,7 @@ impl Render for ProfileEditor {
             .gap(space(1))
             .justify_end()
             .child(
-                button("form-cancel", "취소", !self.saving, Tone::Plain, p)
+                button("form-cancel", "취소", !self.saving, Tone::Default, p)
                     .when(!self.saving, |b| {
                         b.on_click(cx.listener(|v, _, _, cx| v.cancel(cx)))
                     }),
@@ -760,11 +763,7 @@ impl Render for ProfileEditor {
                     }),
             );
 
-        v_flex()
-            .p(space(4))
-            .gap(space(3))
-            .bg(hsla(p.bg))
-            .text_color(hsla(p.text))
+        let frame = dialog_frame(metric::DIALOG_W, p)
             .font_family(font::SANS)
             .child(
                 div()
@@ -786,8 +785,9 @@ impl Render for ProfileEditor {
                     .bg(hsla(p.err_bg))
                     .text_color(hsla(p.err))
                     .text_size(px(font::SMALL.size))
-                    .child(format!("저장하지 못했습니다: {e}"))
+                    .child(format!("저장하지 못했습니다. {e}"))
             }))
-            .child(footer)
+            .child(footer);
+        fade_in("profile-editor", frame)
     }
 }

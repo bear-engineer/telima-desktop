@@ -9,9 +9,13 @@ use gpui_kit::*;
 use telima_app::AppError;
 use telima_app::profiles::Lifecycle;
 use telima_app::runtime::{App as Telima, Task as Work};
+use telima_app::view::notice::error_text;
+use telima_app::view::start_steps::{self, START_STEPS, StartProgress as StepProgress, StepState};
 use telima_core::profile::{ProfileName, ProgressEvent, ProgressLevel};
 
 use super::widgets::{Tone, button};
+use crate::components::chip::status_chip;
+use crate::components::status::Status;
 use crate::style::{hsla, palette, space};
 use crate::theme::{Palette, font, metric};
 
@@ -64,6 +68,8 @@ pub struct StartProgress {
     end: Option<ProgressEnd>,
     work: Work,
     inbox: Inbox,
+    /// Keeps the log pinned to its newest line.
+    scroll: ScrollHandle,
     _poll: Task<()>,
 }
 
@@ -94,6 +100,7 @@ impl StartProgress {
             end: None,
             work,
             inbox,
+            scroll: ScrollHandle::new(),
             // Also redraws the elapsed label while the command runs.
             _poll: super::poll(cx, |v: &mut Self, cx| {
                 v.pump(cx);
@@ -123,6 +130,11 @@ impl StartProgress {
     /// Log lines as shown, e.g. `INFO[0012] starting colima`.
     pub fn lines(&self) -> Vec<String> {
         self.lines.iter().map(Line::text).collect()
+    }
+
+    /// Which of the six start steps the log has reached (Starting.dc.html, M8).
+    pub fn step_progress(&self) -> StepProgress {
+        start_steps::start_progress(self.lines.iter().map(|l| l.event.message.as_str()))
     }
 
     /// `mm:ss` since the command started (stops when it ends).
@@ -162,9 +174,12 @@ impl StartProgress {
                 break;
             }
             match msg {
-                Msg::Line(line) => self.lines.push(line),
+                Msg::Line(line) => {
+                    self.lines.push(line);
+                    self.scroll.scroll_to_bottom();
+                }
                 Msg::Done(Ok(())) => self.finish(ProgressEnd::Done, cx),
-                Msg::Done(Err(e)) => self.finish(ProgressEnd::Failed(e.to_string()), cx),
+                Msg::Done(Err(e)) => self.finish(ProgressEnd::Failed(error_text(&e)), cx),
             }
         }
         cx.notify();
@@ -191,6 +206,71 @@ fn level_color(level: ProgressLevel, p: &Palette) -> Hsla {
     })
 }
 
+fn status_of(end: Option<&ProgressEnd>) -> Status {
+    match end {
+        None => Status::Busy,
+        Some(ProgressEnd::Done) => Status::Running,
+        Some(ProgressEnd::Cancelled) => Status::Stopped,
+        Some(ProgressEnd::Failed(_)) => Status::Error,
+    }
+}
+
+/// Six bars with step names: done = `bar`, current = `busy`, pending = empty track.
+fn step_bars(steps: StepProgress, p: &Palette) -> Div {
+    let states = steps.steps();
+    v_flex()
+        .gap(space(1))
+        .child(
+            h_flex()
+                .gap(space(1))
+                .items_baseline()
+                .child(
+                    div()
+                        .text_size(px(font::BODY.size))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("시작 단계"),
+                )
+                .child(
+                    div()
+                        .font_family(font::MONO)
+                        .text_size(px(font::SMALL.size))
+                        .text_color(hsla(p.text_2))
+                        .child(steps.text()),
+                ),
+        )
+        .child(
+            h_flex()
+                .gap(space(0))
+                .items_start()
+                .children(START_STEPS.iter().zip(states).map(|(name, state)| {
+                    let (fill, text) = match state {
+                        StepState::Done => (Some(p.bar), p.text),
+                        StepState::Current => (Some(p.busy), p.busy),
+                        StepState::Pending => (None, p.text_2),
+                    };
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(space(1))
+                        .child(
+                            div()
+                                .h(px(metric::BAR_H))
+                                .rounded_full()
+                                .bg(hsla(fill.unwrap_or(p.track))),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(font::SMALL.size))
+                                .text_color(hsla(text))
+                                .when(state == StepState::Current, |d| {
+                                    d.font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .child(*name),
+                        )
+                })),
+        )
+}
+
 impl Render for StartProgress {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(window);
@@ -200,21 +280,29 @@ impl Render for StartProgress {
             .gap(space(2))
             .child(
                 div()
-                    .text_size(px(font::BODY.size))
+                    .text_size(px(font::TITLE.size))
+                    .line_height(px(font::TITLE.line_height))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(hsla(p.text))
-                    .child(format!("{} {}", self.name, self.title())),
+                    .child(self.name.to_string()),
             )
+            .child(status_chip(
+                "progress-status",
+                status_of(self.end.as_ref()),
+                self.title(),
+                p,
+            ))
             .child(
                 div()
                     .font_family(font::MONO)
                     .text_size(px(font::SMALL.size))
-                    .text_color(hsla(p.text_2))
+                    .text_color(hsla(if running { p.busy } else { p.text_2 }))
                     .child(format!("{} 경과", self.elapsed_label())),
             )
             .child(div().flex_1())
             .when(running && self.cmd == Lifecycle::Start, |h| {
                 h.child(
-                    button("progress-cancel", "시작 취소", true, Tone::Plain, p)
+                    button("progress-cancel", "시작 취소", true, Tone::Default, p)
                         .on_click(cx.listener(|v, _, _, cx| v.cancel(cx))),
                 )
             });
@@ -222,6 +310,8 @@ impl Render for StartProgress {
         let log = v_flex()
             .id("progress-log")
             .flex_1()
+            .min_h(px(0.0))
+            .track_scroll(&self.scroll)
             .overflow_y_scroll()
             .p(space(2))
             .rounded(px(metric::RADIUS_MD))
@@ -273,8 +363,12 @@ impl Render for StartProgress {
             .p(space(3))
             .gap(space(2))
             .bg(hsla(p.bg))
+            .text_color(hsla(p.text))
             .font_family(font::SANS)
             .child(header)
+            .when(self.cmd != Lifecycle::Stop, |v| {
+                v.child(step_bars(self.step_progress(), p))
+            })
             .child(
                 div()
                     .text_size(px(font::SMALL.size))

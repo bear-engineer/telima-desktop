@@ -233,7 +233,9 @@ fn switch_and_segment_clicks_change_the_draft(cx: &mut TestAppContext) {
     assert!(!form.read_with(cx, |f, _| f.draft().network_address));
 
     let before = form.read_with(cx, |f, _| f.draft().mount_type);
-    let b = cx.debug_bounds("segment-mount-1").expect("mount segments rendered");
+    let b = cx
+        .debug_bounds("segment-mount-1")
+        .expect("mount segments rendered");
     cx.simulate_click(b.center(), Modifiers::none());
     cx.run_until_parked();
     assert_ne!(form.read_with(cx, |f, _| f.draft().mount_type), before);

@@ -7,9 +7,11 @@ use gpui_kit::*;
 use telima_app::AppError;
 use telima_app::runtime::App as Telima;
 use telima_app::view::Confirm;
+use telima_app::view::notice::error_text;
 use telima_core::profile::ProfileName;
 
 use super::widgets::{Tone, button, edit_text, text_box};
+use crate::components::dialog::{dialog_frame, fade_in};
 use crate::style::{hsla, palette, space};
 use crate::theme::{font, metric};
 
@@ -107,7 +109,7 @@ impl DeleteConfirm {
             self.deleting = false;
             match r {
                 Ok(()) => cx.emit(DeleteEvent::Deleted(self.name.clone())),
-                Err(e) => self.error = Some(e.to_string()),
+                Err(e) => self.error = Some(error_text(&e)),
             }
         }
         cx.notify();
@@ -144,15 +146,7 @@ impl Render for DeleteConfirm {
             }
         }));
 
-        v_flex()
-            .w(px(420.0))
-            .p(space(4))
-            .gap(space(3))
-            .rounded(px(metric::RADIUS_LG))
-            .border_1()
-            .border_color(hsla(p.border_strong))
-            .bg(hsla(p.bg_raised))
-            .text_color(hsla(p.text))
+        let frame = dialog_frame(metric::DIALOG_W, p)
             .font_family(font::SANS)
             .child(
                 div()
@@ -181,14 +175,14 @@ impl Render for DeleteConfirm {
                 div()
                     .text_color(hsla(p.err))
                     .text_size(px(font::SMALL.size))
-                    .child(format!("▲ 삭제하지 못했습니다: {e}"))
+                    .child(format!("▲ 삭제하지 못했습니다. {e}"))
             }))
             .child(
                 h_flex()
                     .gap(space(1))
                     .justify_end()
                     .child(
-                        button("delete-cancel", "취소", !self.deleting, Tone::Plain, p)
+                        button("delete-cancel", "취소", !self.deleting, Tone::Default, p)
                             .when(!self.deleting, |b| {
                                 b.on_click(cx.listener(|v, _, _, cx| v.cancel(cx)))
                             }),
@@ -198,6 +192,7 @@ impl Render for DeleteConfirm {
                             b.on_click(cx.listener(|v, _, _, cx| v.confirm(cx)))
                         }),
                     ),
-            )
+            );
+        fade_in("delete-dialog", frame)
     }
 }

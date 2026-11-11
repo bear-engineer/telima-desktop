@@ -2,10 +2,12 @@
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
+use crate::components;
 use crate::style::{hsla, space};
 use crate::theme::{Palette, font, metric};
 
-/// Push button. Disabled buttons get no hover and no click handler (the caller decides).
+/// Push button from the shared component. Disabled buttons get no hover and no click
+/// handler (the caller adds `.on_click` only when enabled).
 pub fn button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -13,43 +15,14 @@ pub fn button(
     tone: Tone,
     p: &Palette,
 ) -> Stateful<Div> {
-    let (bg, fg, border) = match (enabled, tone) {
-        (false, _) => (p.bg_chrome, p.text_disabled, p.border),
-        (true, Tone::Primary) => (p.accent, p.on_accent, p.accent),
-        (true, Tone::Danger) => (p.err, p.on_accent, p.err),
-        (true, Tone::Plain) => (p.bg_raised, p.text, p.border),
-    };
-    let el = div()
-        .id(id.into())
-        .h(px(metric::ROW))
-        .px(space(2))
-        .flex()
-        .items_center()
-        .rounded(px(metric::RADIUS_MD))
-        .border_1()
-        .border_color(hsla(border))
-        .bg(hsla(bg))
-        .text_color(hsla(fg))
-        .text_size(px(font::BODY.size))
-        .child(label.into());
     if enabled {
-        let hover = match tone {
-            Tone::Primary => p.accent_text,
-            Tone::Danger => p.err_border,
-            Tone::Plain => p.bg_hover,
-        };
-        el.cursor_pointer().hover(move |s| s.bg(hsla(hover)))
+        components::button::button(id, label, tone, p)
     } else {
-        el
+        components::button::button_disabled(id, label, p)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tone {
-    Plain,
-    Primary,
-    Danger,
-}
+pub use components::button::ButtonVariant as Tone;
 
 /// One-line text box drawn from a string and a focus handle. Key handling is the caller's.
 pub fn text_box(
@@ -72,7 +45,7 @@ pub fn text_box(
     div()
         .id(id.into())
         .track_focus(focus)
-        .h(px(metric::ROW))
+        .h(px(metric::BTN))
         .px(space(2))
         .flex()
         .items_center()
@@ -118,7 +91,7 @@ pub fn field_row(
                 .gap(space(3))
                 .child(
                     div()
-                        .w(px(96.0))
+                        .w(px(metric::FIELD_LABEL))
                         .text_color(hsla(p.text_2))
                         .text_size(px(font::BODY.size))
                         .child(label),
@@ -127,14 +100,14 @@ pub fn field_row(
         )
         .children(hint.map(|h| {
             div()
-                .pl(px(96.0 + metric::SPACE[2]))
+                .pl(px(metric::FIELD_LABEL + metric::SPACE[2]))
                 .text_color(hsla(p.text_2))
                 .text_size(px(font::SMALL.size))
                 .child(h)
         }))
         .children(errors.into_iter().map(|e| {
             div()
-                .pl(px(96.0 + metric::SPACE[2]))
+                .pl(px(metric::FIELD_LABEL + metric::SPACE[2]))
                 .text_color(hsla(p.err))
                 .text_size(px(font::SMALL.size))
                 .child(format!("▲ {e}"))
