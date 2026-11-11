@@ -7493,7 +7493,9 @@ name = "telima-tray"
 version = "0.1.0"
 dependencies = [
  "ksni",
+ "png 0.18.1",
  "telima-app",
+ "telima-core",
  "tray-icon",
 ]
 

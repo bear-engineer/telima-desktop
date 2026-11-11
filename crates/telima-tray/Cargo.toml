@@ -12,9 +12,13 @@ workspace = true
 
 [dependencies]
 telima-app.workspace = true
+png = "0.18"
+
+[dev-dependencies]
+telima-core.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ksni.workspace = true
+ksni = { workspace = true, features = ["blocking"] }
