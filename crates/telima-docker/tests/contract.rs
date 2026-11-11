@@ -3,7 +3,7 @@
 //! Uses only uniquely named throwaway resources and always cleans up.
 
 use bollard::Docker;
-use bollard::models::{ContainerCreateBody, VolumeCreateRequest};
+use bollard::models::{ContainerCreateBody, HostConfig, VolumeCreateRequest};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
     RemoveVolumeOptionsBuilder, StartContainerOptions, WaitContainerOptions,
@@ -139,6 +139,86 @@ async fn docker_volume_contract() {
     }
     .await;
 
+    let _ = raw
+        .remove_volume(
+            &vol,
+            Some(RemoveVolumeOptionsBuilder::default().force(true).build()),
+        )
+        .await;
+    result
+}
+
+#[tokio::test]
+#[ignore = "needs a running docker engine (TELIMA_DOCKER_SOCKET)"]
+async fn volumes_report_size_and_ref_count() {
+    let socket = socket();
+    let engine = DockerEngine::connect(&socket).expect("connect");
+    let raw = Docker::connect_with_unix(&socket, 120, bollard::API_DEFAULT_VERSION).expect("raw");
+    let vol = unique("telima-contract-usage");
+    let name = unique("telima-contract-writer");
+
+    raw.create_image(
+        Some(
+            CreateImageOptionsBuilder::default()
+                .from_image(IMAGE)
+                .build(),
+        ),
+        None,
+        None,
+    )
+    .try_collect::<Vec<_>>()
+    .await
+    .expect("pull alpine");
+    raw.create_volume(VolumeCreateRequest {
+        name: Some(vol.clone()),
+        ..Default::default()
+    })
+    .await
+    .expect("create volume");
+
+    let result = async {
+        raw.create_container(
+            Some(CreateContainerOptionsBuilder::default().name(&name).build()),
+            ContainerCreateBody {
+                image: Some(IMAGE.into()),
+                cmd: Some(vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "dd if=/dev/zero of=/data/blob bs=1024 count=256".into(),
+                ]),
+                host_config: Some(HostConfig {
+                    binds: Some(vec![format!("{vol}:/data")]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create container");
+        raw.start_container(&name, None::<StartContainerOptions>)
+            .await
+            .expect("start");
+        raw.wait_container(&name, None::<WaitContainerOptions>)
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("wait");
+
+        let volumes = engine.volumes().await.expect("volumes");
+        let found = volumes.iter().find(|v| v.name == vol).expect("listed");
+        assert!(
+            found.size_bytes.is_some_and(|s| s > 0),
+            "size known: {found:?}"
+        );
+        assert!(found.ref_count.is_some(), "ref count known: {found:?}");
+    }
+    .await;
+
+    let _ = raw
+        .remove_container(
+            &name,
+            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+        )
+        .await;
     let _ = raw
         .remove_volume(
             &vol,
