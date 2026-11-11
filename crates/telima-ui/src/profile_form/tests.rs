@@ -278,9 +278,25 @@ fn current_start_step_bar_is_partly_filled(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let current = log.read_with(cx, |l, _| l.step_progress().current);
     assert_eq!(current, 3);
-    let ratio = |i: usize| {
-        let track = cx.debug_bounds(&format!("step-track-{i}")).expect("track");
-        let fill = cx.debug_bounds(&format!("step-fill-{i}")).expect("fill");
+    const TRACKS: [&str; 6] = [
+        "step-track-0",
+        "step-track-1",
+        "step-track-2",
+        "step-track-3",
+        "step-track-4",
+        "step-track-5",
+    ];
+    const FILLS: [&str; 6] = [
+        "step-fill-0",
+        "step-fill-1",
+        "step-fill-2",
+        "step-fill-3",
+        "step-fill-4",
+        "step-fill-5",
+    ];
+    let mut ratio = |i: usize| {
+        let track = cx.debug_bounds(TRACKS[i]).expect("track");
+        let fill = cx.debug_bounds(FILLS[i]).expect("fill");
         f32::from(fill.size.width) / f32::from(track.size.width)
     };
     assert!((ratio(current - 1) - CURRENT_STEP_FILL).abs() < 0.01);

@@ -10,8 +10,9 @@ use telima_app::view::Confirm;
 use telima_app::view::notice::error_text;
 use telima_core::profile::ProfileName;
 
-use super::widgets::{Tone, button, edit_text, text_box};
+use super::widgets::{Tone, button, edit_text, error_line, text_box};
 use crate::components::dialog::{dialog_frame, fade_in};
+use crate::components::paragraph::paragraph;
 use crate::style::{hsla, palette, space};
 use crate::theme::{font, metric};
 
@@ -32,6 +33,8 @@ pub struct DeleteConfirm {
     error: Option<String>,
     inbox: Inbox,
     focus: FocusHandle,
+    /// Set until the first render moves focus into the dialog.
+    focus_on_open: bool,
     _poll: Task<()>,
 }
 
@@ -49,12 +52,18 @@ impl DeleteConfirm {
             error: None,
             inbox: Inbox::default(),
             focus: cx.focus_handle(),
+            focus_on_open: true,
             _poll: super::poll(cx, Self::pump),
         }
     }
 
     pub fn typed(&self) -> &str {
         &self.typed
+    }
+
+    /// True while keyboard focus is inside the dialog (it takes focus when it opens, N3).
+    pub fn has_focus(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
     }
 
     pub fn is_deleting(&self) -> bool {
@@ -118,6 +127,9 @@ impl DeleteConfirm {
 
 impl Render for DeleteConfirm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.focus_on_open) {
+            window.focus(&self.focus, cx);
+        }
         let p = palette(window);
         let can = self.can_delete();
         let label = if self.deleting {
@@ -141,12 +153,16 @@ impl Render for DeleteConfirm {
                 v.set_typed(&text, cx);
             } else if ev.keystroke.key == "enter" {
                 v.confirm(cx);
-            } else if ev.keystroke.key == "escape" {
-                v.cancel(cx);
             }
         }));
 
+        // Escape bubbles here from anywhere inside the frame, not only from the input.
         let frame = dialog_frame(metric::DIALOG_W, p)
+            .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "escape" {
+                    v.cancel(cx);
+                }
+            }))
             .font_family(font::SANS)
             .child(
                 div()
@@ -159,24 +175,22 @@ impl Render for DeleteConfirm {
                     .text_size(px(font::BODY.size))
                     .line_height(px(font::BODY.line_height))
                     .text_color(hsla(p.text_2))
-                    .child(self.copy.body.clone()),
+                    .child(paragraph(&self.copy.body)),
             )
             .child(
                 v_flex()
                     .gap(space(1))
                     .child(
-                        div()
-                            .text_size(px(font::SMALL.size))
-                            .child(format!("확인하려면 '{}'을(를) 입력하세요", self.name)),
+                        paragraph(format!("확인하려면 '{}'을(를) 입력하세요", self.name))
+                            .text_size(px(font::SMALL.size)),
                     )
                     .child(input),
             )
-            .children(self.error.as_ref().map(|e| {
-                div()
-                    .text_color(hsla(p.err))
-                    .text_size(px(font::SMALL.size))
-                    .child(format!("▲ 삭제하지 못했습니다. {e}"))
-            }))
+            .children(
+                self.error
+                    .as_ref()
+                    .map(|e| error_line("delete-error", format!("삭제하지 못했습니다. {e}"), p)),
+            )
             .child(
                 h_flex()
                     .gap(space(1))

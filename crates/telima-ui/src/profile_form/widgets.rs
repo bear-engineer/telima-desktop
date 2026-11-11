@@ -3,6 +3,8 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::components;
+use crate::components::paragraph::paragraph;
+use crate::components::status::{Status, status_shape};
 use crate::style::{hsla, space};
 use crate::theme::{Palette, font, metric};
 
@@ -103,13 +105,22 @@ pub fn field_row(
                 .pl(px(metric::FIELD_LABEL + metric::SPACE[2]))
                 .text_color(hsla(p.text_2))
                 .text_size(px(font::SMALL.size))
-                .child(h)
+                .child(paragraph(h))
         }))
-        .children(errors.into_iter().map(|e| {
+        .children(errors.into_iter().enumerate().map(|(i, e)| {
             div()
                 .pl(px(metric::FIELD_LABEL + metric::SPACE[2]))
-                .text_color(hsla(p.err))
-                .text_size(px(font::SMALL.size))
-                .child(format!("▲ {e}"))
+                .child(error_line(format!("field-error-{label}-{i}"), e, p))
         }))
+}
+
+/// Error message led by the status triangle (L4), wrapping between words (N5).
+pub fn error_line(id: impl Into<SharedString>, text: impl AsRef<str>, p: &Palette) -> Div {
+    h_flex()
+        .gap(space(0))
+        .items_start()
+        .text_color(hsla(p.err))
+        .text_size(px(font::SMALL.size))
+        .child(status_shape(ElementId::Name(id.into()), Status::Error, p))
+        .child(paragraph(text).flex_1())
 }

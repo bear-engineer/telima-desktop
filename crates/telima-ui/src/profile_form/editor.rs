@@ -11,8 +11,9 @@ use telima_app::view::notice::error_text;
 use telima_core::profile::{HostOs, MountType, ProfileName, ProfileSpec, Runtime, VmType};
 use telima_core::rules::{self, RuleViolation};
 
-use super::widgets::{Tone, button, edit_text, field_row, text_box};
-use crate::components::dialog::{dialog_frame, fade_in};
+use super::widgets::{Tone, button, edit_text, error_line, field_row, text_box};
+use crate::components::dialog::fade_in;
+use crate::components::paragraph::paragraph;
 use crate::components::segmented::segmented;
 use crate::components::switch::switch;
 use crate::style::{hsla, palette, space};
@@ -739,7 +740,8 @@ impl Render for ProfileEditor {
             .children(
                 self.violations_for(Field::Runtime)
                     .into_iter()
-                    .map(|e| div().text_color(hsla(p.err)).child(format!("▲ {e}"))),
+                    .enumerate()
+                    .map(|(i, e)| error_line(format!("runtime-error-{i}"), e, p)),
             );
 
         let submit_label = match (editing, self.saving) {
@@ -763,18 +765,12 @@ impl Render for ProfileEditor {
                     }),
             );
 
-        let frame = dialog_frame(metric::DIALOG_W, p)
+        // N4: inline in the shell's space(4) inset, no frame; the shell crumb (create) or
+        // profile header (edit) is the only title.
+        let frame = v_flex()
+            .gap(space(2))
+            .text_color(hsla(p.text))
             .font_family(font::SANS)
-            .child(
-                div()
-                    .text_size(px(font::TITLE.size))
-                    .line_height(px(font::TITLE.line_height))
-                    .child(if editing {
-                        "프로필 편집"
-                    } else {
-                        "새 프로필"
-                    }),
-            )
             .child(rows)
             .children(self.save_error.as_ref().map(|e| {
                 div()
@@ -785,7 +781,7 @@ impl Render for ProfileEditor {
                     .bg(hsla(p.err_bg))
                     .text_color(hsla(p.err))
                     .text_size(px(font::SMALL.size))
-                    .child(format!("저장하지 못했습니다. {e}"))
+                    .child(paragraph(format!("저장하지 못했습니다. {e}")))
             }))
             .child(footer);
         fade_in("profile-editor", frame)

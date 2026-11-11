@@ -13,11 +13,16 @@ use telima_app::view::notice::error_text;
 use telima_app::view::start_steps::{self, START_STEPS, StartProgress as StepProgress, StepState};
 use telima_core::profile::{ProfileName, ProgressEvent, ProgressLevel};
 
-use super::widgets::{Tone, button};
+use super::widgets::{Tone, button, error_line};
 use crate::components::chip::status_chip;
+use crate::components::paragraph::paragraph;
 use crate::components::status::Status;
 use crate::style::{hsla, palette, space};
 use crate::theme::{Palette, font, metric};
+
+/// Share of the current step's bar drawn in `busy` (Starting.dc.html: `width: 45%`, M8).
+/// A layout fraction, not a theme size.
+pub(super) const CURRENT_STEP_FILL: f32 = 0.45;
 
 /// How the command ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,35 +244,48 @@ fn step_bars(steps: StepProgress, p: &Palette) -> Div {
                 ),
         )
         .child(
-            h_flex()
-                .gap(space(0))
-                .items_start()
-                .children(START_STEPS.iter().zip(states).map(|(name, state)| {
-                    let (fill, text) = match state {
-                        StepState::Done => (Some(p.bar), p.text),
-                        StepState::Current => (Some(p.busy), p.busy),
-                        StepState::Pending => (None, p.text_2),
-                    };
-                    v_flex()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .gap(space(1))
-                        .child(
-                            div()
-                                .h(px(metric::BAR_H))
-                                .rounded_full()
-                                .bg(hsla(fill.unwrap_or(p.track))),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(font::SMALL.size))
-                                .text_color(hsla(text))
-                                .when(state == StepState::Current, |d| {
-                                    d.font_weight(FontWeight::SEMIBOLD)
-                                })
-                                .child(*name),
-                        )
-                })),
+            h_flex().gap(space(0)).items_start().children(
+                START_STEPS
+                    .iter()
+                    .zip(states)
+                    .enumerate()
+                    .map(|(i, (name, state))| {
+                        let (fill, share, text) = match state {
+                            StepState::Done => (p.bar, 1.0, p.text),
+                            StepState::Current => (p.busy, CURRENT_STEP_FILL, p.busy),
+                            StepState::Pending => (p.track, 0.0, p.text_2),
+                        };
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap(space(1))
+                            .child(
+                                div()
+                                    .h(px(metric::BAR_H))
+                                    .rounded_full()
+                                    .overflow_hidden()
+                                    .bg(hsla(p.track))
+                                    .debug_selector(move || format!("step-track-{i}"))
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(relative(share))
+                                            .rounded_full()
+                                            .bg(hsla(fill))
+                                            .debug_selector(move || format!("step-fill-{i}")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(font::SMALL.size))
+                                    .text_color(hsla(text))
+                                    .when(state == StepState::Current, |d| {
+                                        d.font_weight(FontWeight::SEMIBOLD)
+                                    })
+                                    .child(*name),
+                            )
+                    }),
+            ),
         )
 }
 
@@ -349,13 +367,12 @@ impl Render for StartProgress {
             .text_size(px(font::SMALL.size))
             .text_color(hsla(p.text_2))
             .child(match &self.end {
-                Some(ProgressEnd::Failed(e)) => format!("▲ {e}"),
+                Some(ProgressEnd::Failed(e)) => error_line("progress-error", e, p).flex_1(),
                 _ if self.cmd == Lifecycle::Start => {
-                    "취소하면 VM을 멈춥니다. 만든 디스크는 남습니다.".to_owned()
+                    paragraph("취소하면 VM을 멈춥니다. 만든 디스크는 남습니다.").flex_1()
                 }
-                _ => String::new(),
+                _ => div().flex_1(),
             })
-            .child(div().flex_1())
             .child(format!("{}줄", self.lines.len()));
 
         v_flex()
