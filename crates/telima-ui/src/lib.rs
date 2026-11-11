@@ -1,5 +1,8 @@
 //! GPUI views. Knows view models from `telima-app`, never adapters.
+pub mod engine_views;
+pub mod profile_form;
 pub mod shell;
+pub mod style;
 pub mod theme;
 use gpui_kit::component::v_flex;
 use gpui_kit::*;
