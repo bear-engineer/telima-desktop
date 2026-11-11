@@ -219,13 +219,22 @@ pub fn log_rows<'a>(lines: &'a [LogLine], query: &str, utc_offset_secs: i32) -> 
 /// 포트 cell text: the first mapping, plus `+N` for the others (F7). The full list is the
 /// cell's tooltip.
 pub fn port_cell(ports: &str) -> String {
-    ports.to_owned()
+    // `ContainerRow::ports` joins the mappings with ", " (telima-app `ports_text`).
+    let mut parts = ports.split(", ");
+    let first = parts.next().unwrap_or_default();
+    match parts.count() {
+        0 => first.to_owned(),
+        more => super::copy::first_port_and_more(first, more),
+    }
 }
 
 /// Log footer count: `17줄`, or `6 / 17줄` while 로그 검색 narrows the lines (F8).
 pub fn log_count_text(shown: usize, total: usize, filtering: bool) -> String {
-    let _ = (shown, filtering);
-    super::copy::line_count(&group_thousands(total))
+    if filtering {
+        super::copy::filtered_line_count(&group_thousands(shown), &group_thousands(total))
+    } else {
+        super::copy::line_count(&group_thousands(total))
+    }
 }
 
 /// `1204` -> `1,204`.

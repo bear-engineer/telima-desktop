@@ -9,7 +9,7 @@ use telima_app::view::{ContainerRow, ImageRow, VolumeRow, short_image_id};
 
 use super::icons::{Icon, icon};
 use super::model::{
-    LineTone, StatusFilter, container_status, group_thousands, row_actions, volume_chip,
+    LineTone, StatusFilter, container_status, log_count_text, port_cell, row_actions, volume_chip,
 };
 use super::{Dialog, EnginePanel, ListState, LogPanel, copy};
 use crate::components::button::{ButtonVariant, button, icon_button};
@@ -364,7 +364,18 @@ impl EnginePanel {
                         })
                         .child(r.status_text.clone()),
                 )
-                .child(col(4).child(mono(r.ports.clone(), p.text_2)))
+                .child({
+                    let full = SharedString::from(r.ports.clone());
+                    col(4)
+                        .id(SharedString::from(format!("ctr-ports-{}", r.id)))
+                        .when(full.contains(", "), |c| {
+                            c.tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(full.clone())
+                                    .build(window, cx)
+                            })
+                        })
+                        .child(mono(port_cell(&r.ports), p.text_2))
+                })
                 .child(col(5).child(text(r.started.clone(), p.text_2)))
                 .child(self.row_actions_view(r, selected, p, cx))
         });
@@ -555,7 +566,7 @@ impl EnginePanel {
             .debug_selector(|| "log-search".into())
             .track_focus(&self.log_search_focus)
             .flex_none()
-            .w(px(metric::FIELD_SELECT))
+            .w(px(metric::FIELD_SEARCH))
             .h(px(metric::BTN_SM))
             .px(space(1))
             .gap(space(0))
@@ -592,6 +603,7 @@ impl EnginePanel {
     ) -> AnyElement {
         let (follow, show_time) = (log.follow, log.show_time);
         let rows = self.log_rows();
+        let count = log_count_text(rows.len(), log.lines.len(), !log.query.is_empty());
         let lines = rows.iter().map(|l| {
             let color = match l.tone {
                 LineTone::Error => p.err,
@@ -753,10 +765,7 @@ impl EnginePanel {
                             )),
                     )
                     .child(div().flex_1())
-                    .child(mono(
-                        copy::line_count(&group_thousands(log.lines.len())),
-                        p.text_2,
-                    )),
+                    .child(mono(count, p.text_2)),
             )
             .with_animation(
                 SharedString::from(format!("log-open-{}", log.container)),

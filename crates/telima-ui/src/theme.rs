@@ -248,7 +248,7 @@ pub mod metric {
     pub const FIELD_NUM: f32 = 64.0;
     pub const FIELD_SELECT: f32 = 220.0;
     /// Search field in a panel header (Containers.dc.html 로그 검색).
-    pub const FIELD_SEARCH: f32 = 220.0;
+    pub const FIELD_SEARCH: f32 = 160.0;
     /// Dialog widths (confirm dialogs use the small one).
     pub const DIALOG_W: f32 = 420.0;
     pub const DIALOG_W_SM: f32 = 360.0;

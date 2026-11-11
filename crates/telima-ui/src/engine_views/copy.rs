@@ -35,6 +35,16 @@ pub fn line_count(lines: &str) -> String {
     format!("{lines}줄")
 }
 
+/// Footer count while 로그 검색 narrows the lines: shown over total.
+pub fn filtered_line_count(shown: &str, total: &str) -> String {
+    format!("{shown} / {total}줄")
+}
+
+/// A port mapping followed by the number of further mappings.
+pub fn first_port_and_more(first: &str, more: usize) -> String {
+    format!("{first} +{more}")
+}
+
 pub fn confirm_remove_exited(n: usize) -> Confirm {
     Confirm {
         title: format!("종료된 컨테이너 {n}개를 삭제할까요?"),
@@ -47,14 +57,15 @@ pub fn confirm_remove_exited(n: usize) -> Confirm {
 
 /// Column headers of the containers table: (label, share of the row width). Shares sum to
 /// 1.0 so the cells fill the row up to the actions slot (N7); 상태 keeps room for
-/// "실행 중 · 2시간" (Containers.dc.html, M4).
+/// "실행 중 · 2시간" (Containers.dc.html, M4) and 포트 for "9999→9999/tcp" at the main pane
+/// width (F7, width taken from 이름/ID/이미지).
 pub const CONTAINER_COLS: [(&str, f32); 6] = [
-    ("이름", 0.18),
-    ("ID", 0.12),
-    ("이미지", 0.2),
+    ("이름", 0.15),
+    ("ID", 0.1),
+    ("이미지", 0.16),
     ("상태", 0.22),
-    ("포트", 0.16),
-    ("시작", 0.12),
+    ("포트", 0.24),
+    ("시작", 0.13),
 ];
 pub const IMAGE_COLS: [(&str, f32); 4] = [
     ("태그", 0.4),
