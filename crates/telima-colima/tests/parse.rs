@@ -39,11 +39,12 @@ fn ls_empty_output_is_no_profiles() {
 
 #[test]
 fn ls_invalid_json_reports_line() {
-    let err = parse_ls("{\"name\":\"default\"}\nnot json\n").unwrap_err();
-    assert!(matches!(
-        err,
-        ParseError::Json { line: 1, .. } | ParseError::Json { line: 2, .. }
-    ));
+    let first = LS_MIXED.lines().next().unwrap();
+    let err = parse_ls(&format!("{first}\nnot json\n")).unwrap_err();
+    assert!(
+        matches!(err, ParseError::Json { line: 2, .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]

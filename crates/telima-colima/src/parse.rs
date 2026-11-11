@@ -1,5 +1,7 @@
 //! Pure parsers for `colima` CLI output. No I/O.
-use telima_core::profile::{Profile, ProgressEvent};
+use telima_core::profile::{
+    Profile, ProfileName, ProfileStatus, ProgressEvent, ProgressLevel, Runtime,
+};
 
 /// Failure to read a piece of `colima` output.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -15,16 +17,110 @@ pub enum ParseError {
 }
 
 /// Parse `colima ls -j` output (one JSON object per line).
-pub fn parse_ls(_output: &str) -> Result<Vec<Profile>, ParseError> {
-    todo!("RED: parse_ls")
+pub fn parse_ls(output: &str) -> Result<Vec<Profile>, ParseError> {
+    let mut profiles = Vec::new();
+    for (idx, raw) in output.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(line).map_err(|e| ParseError::Json {
+            line: idx + 1,
+            message: e.to_string(),
+        })?;
+        profiles.push(profile_from_json(&v)?);
+    }
+    Ok(profiles)
+}
+
+fn profile_from_json(v: &serde_json::Value) -> Result<Profile, ParseError> {
+    let name_raw = str_field(v, "name");
+    let name = ProfileName::parse(name_raw).map_err(|_| ParseError::Name(name_raw.to_owned()))?;
+    let status = match str_field(v, "status") {
+        "Running" => ProfileStatus::Running,
+        "Stopped" => ProfileStatus::Stopped,
+        other => ProfileStatus::Other(other.to_owned()),
+    };
+    let runtime = match str_field(v, "runtime") {
+        "docker" => Runtime::Docker,
+        "containerd" => Runtime::Containerd,
+        "incus" => Runtime::Incus,
+        other => return Err(ParseError::Runtime(other.to_owned())),
+    };
+    let address = v
+        .get("address")
+        .and_then(|a| a.as_str())
+        .filter(|a| !a.is_empty())
+        .map(str::to_owned);
+    Ok(Profile {
+        name,
+        status,
+        arch: str_field(v, "arch").to_owned(),
+        cpus: u32::try_from(u64_field(v, "cpus")).unwrap_or(u32::MAX),
+        memory_bytes: u64_field(v, "memory"),
+        disk_bytes: u64_field(v, "disk"),
+        address,
+        runtime,
+    })
+}
+
+fn str_field<'a>(v: &'a serde_json::Value, key: &str) -> &'a str {
+    v.get(key).and_then(|x| x.as_str()).unwrap_or("")
+}
+
+fn u64_field(v: &serde_json::Value, key: &str) -> u64 {
+    v.get(key).and_then(|x| x.as_u64()).unwrap_or(0)
 }
 
 /// Parse one stderr line of a long-running colima command.
-pub fn parse_log_line(_line: &str) -> ProgressEvent {
-    todo!("RED: parse_log_line")
+/// `time=... level=<l> msg="..."` yields level and message; any other line is Info with the whole text.
+pub fn parse_log_line(line: &str) -> ProgressEvent {
+    let plain = || ProgressEvent {
+        level: ProgressLevel::Info,
+        message: line.trim().to_owned(),
+    };
+    let Some(level_raw) = line
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("level="))
+    else {
+        return plain();
+    };
+    let Some(msg_start) = line.find("msg=\"") else {
+        return plain();
+    };
+    let level = match level_raw {
+        "warn" | "warning" => ProgressLevel::Warn,
+        "error" | "fatal" => ProgressLevel::Error,
+        _ => ProgressLevel::Info,
+    };
+    let mut message = String::new();
+    let mut chars = line[msg_start + 5..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    message.push(next);
+                }
+            }
+            _ => message.push(c),
+        }
+    }
+    ProgressEvent { level, message }
 }
 
 /// Parse the first line of `colima version` output, e.g. `colima version 0.10.3`.
-pub fn parse_version(_output: &str) -> Result<(u32, u32, u32), ParseError> {
-    todo!("RED: parse_version")
+pub fn parse_version(output: &str) -> Result<(u32, u32, u32), ParseError> {
+    let first = output.lines().next().unwrap_or("");
+    let bad = || ParseError::Version(first.to_owned());
+    let token = first
+        .split_whitespace()
+        .map(|t| t.strip_prefix('v').unwrap_or(t))
+        .find(|t| t.starts_with(|c: char| c.is_ascii_digit()))
+        .ok_or_else(bad)?;
+    let mut parts = token.split('.').map(|p| p.parse::<u32>());
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(Ok(a)), Some(Ok(b)), Some(Ok(c))) => Ok((a, b, c)),
+        _ => Err(bad()),
+    }
 }
