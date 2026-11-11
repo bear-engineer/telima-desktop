@@ -247,6 +247,8 @@ pub mod metric {
     /// Number input and select widths in forms.
     pub const FIELD_NUM: f32 = 64.0;
     pub const FIELD_SELECT: f32 = 220.0;
+    /// Search field in a panel header (Containers.dc.html 로그 검색).
+    pub const FIELD_SEARCH: f32 = 220.0;
     /// Dialog widths (confirm dialogs use the small one).
     pub const DIALOG_W: f32 = 420.0;
     pub const DIALOG_W_SM: f32 = 360.0;
@@ -416,6 +418,7 @@ mod tests {
             (88.0, 96.0, 64.0, 220.0)
         );
         assert_eq!((CHIP_H, BTN, BTN_SM, TAB_H), (22.0, 28.0, 24.0, 36.0));
+        assert_eq!(FIELD_SEARCH, 160.0);
         assert_eq!((DOT, SKELETON_H, BAR_H, FOCUS_RING), (8.0, 10.0, 4.0, 2.0));
         assert_eq!((SWITCH_W, SWITCH_H, SWITCH_KNOB), (28.0, 16.0, 12.0));
         assert_eq!((WINDOW_W, WINDOW_H), (1080.0, 720.0));

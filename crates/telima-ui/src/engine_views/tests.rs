@@ -461,6 +461,13 @@ fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
             status.size.width >= need,
             "status cell {status:?} narrower than {need:?} at {w}"
         );
+        // F7: the 포트 column (4) fits one full mapping without an ellipsis.
+        let need = mono_text_width(cx, "9999→9999/tcp");
+        let port = cx.debug_bounds("ctr-cell-c1-4").expect("port cell");
+        assert!(
+            port.size.width >= need,
+            "port cell {port:?} narrower than {need:?} at {w}"
+        );
         // M4: 포트/시작 columns are back now that rows carry the data.
         let labels: Vec<_> = super::copy::CONTAINER_COLS.iter().map(|c| c.0).collect();
         assert_eq!(labels, ["이름", "ID", "이미지", "상태", "포트", "시작"]);
@@ -476,6 +483,39 @@ fn status_text_width(cx: &mut VisualTestContext) -> gpui_kit::Pixels {
             .layout_line(s, px(font::BODY.size), &[run], None)
             .width
     })
+}
+
+fn mono_text_width(cx: &mut VisualTestContext, s: &str) -> gpui_kit::Pixels {
+    cx.update(|window, _| {
+        let mut style = window.text_style();
+        style.font_family = font::MONO.into();
+        let run = style.to_run(s.len());
+        window
+            .text_system()
+            .layout_line(s, px(font::CODE.size), &[run], None)
+            .width
+    })
+}
+
+/// F7: several mappings show the first plus a count; one mapping or none stays as is.
+#[test]
+fn f7_port_cell_shows_the_first_mapping_plus_a_count() {
+    use super::model::port_cell;
+    assert_eq!(port_cell("9999→9999/tcp"), "9999→9999/tcp");
+    assert_eq!(port_cell("—"), "—");
+    assert_eq!(
+        port_cell("8080→8080/tcp, 443→8443/tcp, 53/udp"),
+        "8080→8080/tcp +2"
+    );
+}
+
+/// F8: while 로그 검색 is active the footer counts the shown lines over the total.
+#[test]
+fn f8_log_count_shows_filtered_over_total() {
+    use super::model::log_count_text;
+    assert_eq!(log_count_text(17, 17, false), "17줄");
+    assert_eq!(log_count_text(6, 17, true), "6 / 17줄");
+    assert_eq!(log_count_text(0, 1204, true), "0 / 1,204줄");
 }
 
 fn sel(s: String) -> &'static str {
@@ -668,6 +708,8 @@ fn log_search_field_filters_lines(cx: &mut TestAppContext) {
     open_logs_by_menu(cx);
     spawner_settle(&view, cx);
     let field = cx.debug_bounds("log-search").expect("로그 검색 field");
+    // F8: the field is the canvas search width, not the form select width.
+    assert_eq!(field.size.width, px(metric::FIELD_SEARCH));
     cx.simulate_click(field.center(), Modifiers::none());
     cx.simulate_keystrokes("z z z");
     cx.run_until_parked();
