@@ -113,6 +113,35 @@ pub enum ProgressLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn uptime_is_measured_from_the_start_time() {
+        let info = RuntimeInfo {
+            started_at: Some(UnixMillis::from_secs(1_000)),
+            ..RuntimeInfo::default()
+        };
+        assert_eq!(
+            info.uptime(UnixMillis::from_secs(1_000 + 3 * 3600 + 12 * 60)),
+            Some(Duration::from_secs(3 * 3600 + 12 * 60))
+        );
+    }
+
+    #[test]
+    fn uptime_is_unknown_without_a_start_time() {
+        let info = RuntimeInfo {
+            colima: Some(ColimaVersion::new(0, 10, 3)),
+            docker_client: Some("29.9.3".into()),
+            docker_server: Some("29.5.2".into()),
+            ..RuntimeInfo::default()
+        };
+        assert_eq!(info.uptime(UnixMillis::from_secs(5)), None);
+    }
+
+    #[test]
+    fn delete_keeps_data_by_default() {
+        assert_eq!(DeleteOptions::default(), DeleteOptions { data: false });
+    }
 
     #[test]
     fn accepts_simple_names() {

@@ -105,6 +105,75 @@ mod tests {
     }
 
     #[test]
+    fn only_stopped_containers_can_start() {
+        use ContainerState::*;
+        for s in [Created, Exited] {
+            assert!(s.can_start(), "{s:?}");
+        }
+        for s in [Running, Paused, Restarting, Dead, Other] {
+            assert!(!s.can_start(), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn only_live_containers_can_stop() {
+        use ContainerState::*;
+        for s in [Running, Paused, Restarting] {
+            assert!(s.can_stop(), "{s:?}");
+        }
+        for s in [Created, Exited, Dead, Other] {
+            assert!(!s.can_stop(), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn port_is_published_only_with_a_host_port() {
+        let port = |host_port| PortBinding {
+            host_ip: None,
+            host_port,
+            container_port: 80,
+            protocol: PortProtocol::Tcp,
+        };
+        assert!(port(Some(8080)).is_published());
+        assert!(!port(None).is_published());
+    }
+
+    #[test]
+    fn parses_port_protocols() {
+        assert_eq!(PortProtocol::parse("tcp"), Some(PortProtocol::Tcp));
+        assert_eq!(PortProtocol::parse("UDP"), Some(PortProtocol::Udp));
+        assert_eq!(PortProtocol::parse("sctp"), Some(PortProtocol::Sctp));
+        assert_eq!(PortProtocol::parse("icmp"), None);
+    }
+
+    #[test]
+    fn container_carries_ports_and_times_and_logs_carry_a_timestamp() {
+        let c = Container {
+            id: "abc".into(),
+            name: "web".into(),
+            image: "nginx".into(),
+            state: ContainerState::Running,
+            status_text: "Up 2 hours".into(),
+            ports: vec![PortBinding {
+                host_ip: Some("0.0.0.0".into()),
+                host_port: Some(8080),
+                container_port: 80,
+                protocol: PortProtocol::Tcp,
+            }],
+            created_at: Some(UnixMillis::from_secs(10)),
+            started_at: None,
+        };
+        assert_eq!(c.ports[0].container_port, 80);
+        assert!(c.created_at > c.started_at);
+        let line = LogLine {
+            stream: LogStream::Stdout,
+            text: "hello".into(),
+            timestamp: Some(UnixMillis(1_500)),
+        };
+        assert_eq!(line.timestamp.map(UnixMillis::as_secs), Some(1));
+    }
+
+    #[test]
     fn dangling_means_no_tags() {
         let img = |tags: Vec<&str>| Image {
             id: "sha".into(),

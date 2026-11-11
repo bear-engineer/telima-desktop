@@ -116,7 +116,7 @@ pub const IMMUTABLE_FIELDS: &[(&str, FieldChanged)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::ProfileName;
+    use crate::profile::{Mount, ProfileName};
 
     fn mac_spec() -> ProfileSpec {
         ProfileSpec {
@@ -129,6 +129,172 @@ mod tests {
             runtime: Runtime::Docker,
             rosetta: true,
             network_address: false,
+            mounts: Vec::new(),
+            kubernetes: false,
+        }
+    }
+
+    fn mount(path: &str, writable: bool) -> Mount {
+        Mount {
+            path: path.to_owned(),
+            writable,
+        }
+    }
+
+    #[test]
+    fn absolute_distinct_mounts_pass() {
+        let spec = ProfileSpec {
+            mounts: vec![mount("/Users/me/src", true), mount("/tmp/data", false)],
+            ..mac_spec()
+        };
+        assert_eq!(validate_new(&spec, HostOs::MacOs), Ok(()));
+    }
+
+    #[test]
+    fn mount_path_must_be_absolute() {
+        for bad in ["", "src", "./src", "~/src", " /lead-space"] {
+            let spec = ProfileSpec {
+                mounts: vec![mount(bad, true)],
+                ..mac_spec()
+            };
+            assert_eq!(
+                validate_new(&spec, HostOs::MacOs).unwrap_err(),
+                vec![RuleViolation::MountPathNotAbsolute(bad.to_owned())],
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_mounts_are_rejected_once_ignoring_trailing_slash_and_writable() {
+        let spec = ProfileSpec {
+            mounts: vec![
+                mount("/a/b", true),
+                mount("/a/b/", false),
+                mount("/a/b", false),
+                mount("/c", true),
+            ],
+            ..mac_spec()
+        };
+        assert_eq!(
+            validate_new(&spec, HostOs::MacOs).unwrap_err(),
+            vec![RuleViolation::DuplicateMount("/a/b".to_owned())]
+        );
+    }
+
+    #[test]
+    fn root_mount_is_absolute_and_distinct_from_others() {
+        let spec = ProfileSpec {
+            mounts: vec![mount("/", false), mount("/a", true)],
+            ..mac_spec()
+        };
+        assert_eq!(validate_new(&spec, HostOs::MacOs), Ok(()));
+    }
+
+    #[test]
+    fn kubernetes_is_allowed_with_docker() {
+        let spec = ProfileSpec {
+            kubernetes: true,
+            ..mac_spec()
+        };
+        assert_eq!(validate_new(&spec, HostOs::MacOs), Ok(()));
+    }
+
+    #[test]
+    fn kubernetes_is_rejected_with_other_runtimes() {
+        let spec = ProfileSpec {
+            kubernetes: true,
+            runtime: Runtime::Incus,
+            ..mac_spec()
+        };
+        let errs = validate_new(&spec, HostOs::MacOs).unwrap_err();
+        assert!(errs.contains(&RuleViolation::KubernetesNeedsDocker(Runtime::Incus)));
+    }
+
+    #[test]
+    fn update_may_change_mounts_and_kubernetes() {
+        let next = ProfileSpec {
+            mounts: vec![mount("/a", true)],
+            kubernetes: true,
+            ..mac_spec()
+        };
+        assert_eq!(validate_update(&mac_spec(), &next, HostOs::MacOs), Ok(()));
+    }
+
+    #[test]
+    fn update_checks_the_new_mounts() {
+        let next = ProfileSpec {
+            mounts: vec![mount("rel", true)],
+            ..mac_spec()
+        };
+        assert_eq!(
+            validate_update(&mac_spec(), &next, HostOs::MacOs).unwrap_err(),
+            vec![RuleViolation::MountPathNotAbsolute("rel".to_owned())]
+        );
+    }
+
+    #[test]
+    fn unchanged_spec_needs_no_restart() {
+        assert!(restart_required(&mac_spec(), &mac_spec()).is_empty());
+    }
+
+    #[test]
+    fn mounts_and_kubernetes_changes_need_a_restart() {
+        let next = ProfileSpec {
+            mounts: vec![mount("/a", true)],
+            kubernetes: true,
+            ..mac_spec()
+        };
+        assert_eq!(
+            restart_required(&mac_spec(), &next),
+            vec!["mounts", "kubernetes"]
+        );
+    }
+
+    #[test]
+    fn writable_flag_change_alone_needs_a_restart() {
+        let cur = ProfileSpec {
+            mounts: vec![mount("/a", true)],
+            ..mac_spec()
+        };
+        let next = ProfileSpec {
+            mounts: vec![mount("/a", false)],
+            ..mac_spec()
+        };
+        assert_eq!(restart_required(&cur, &next), vec!["mounts"]);
+    }
+
+    #[test]
+    fn resource_and_option_changes_need_a_restart() {
+        let next = ProfileSpec {
+            cpus: 4,
+            memory_gib: 8,
+            disk_gib: 40,
+            mount_type: MountType::Sshfs,
+            rosetta: false,
+            network_address: true,
+            ..mac_spec()
+        };
+        assert_eq!(
+            restart_required(&mac_spec(), &next),
+            vec![
+                "cpus",
+                "memory_gib",
+                "disk_gib",
+                "mount_type",
+                "rosetta",
+                "network_address"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_restart_field_is_mutable() {
+        for (field, _) in RESTART_FIELDS {
+            assert!(
+                IMMUTABLE_FIELDS.iter().all(|(name, _)| name != field),
+                "{field} is listed as both immutable and restart-applied"
+            );
         }
     }
 
