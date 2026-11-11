@@ -27,23 +27,79 @@ pub struct Rgba {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IconError(pub String);
 
+macro_rules! png {
+    ($path:literal) => {
+        include_bytes!(concat!("../../../assets/icon/tray/", $path)).as_slice()
+    };
+}
+
 /// macOS 템플릿 아이콘(@2x, 36×36 — 메뉴 막대에서 18pt).
-pub fn macos_png(_state: TrayIconState) -> &'static [u8] {
-    todo!()
+pub fn macos_png(state: TrayIconState) -> &'static [u8] {
+    match state {
+        TrayIconState::AllStopped => png!("macos/stopped@2x.png"),
+        TrayIconState::Running => png!("macos/running@2x.png"),
+        TrayIconState::Busy => png!("macos/busy@2x.png"),
+        TrayIconState::Error => png!("macos/error@2x.png"),
+    }
 }
 
-/// Linux 아이콘. `size`는 22 또는 24.
-pub fn linux_png(_state: TrayIconState, _size: u32, _panel: PanelVariant) -> &'static [u8] {
-    todo!()
+/// Linux 아이콘. `size`는 22 또는 24, 그 밖의 값은 24로 본다.
+pub fn linux_png(state: TrayIconState, size: u32, panel: PanelVariant) -> &'static [u8] {
+    use PanelVariant::{Dark, Light};
+    use TrayIconState::{AllStopped, Busy, Error, Running};
+    match (size == 22, state, panel) {
+        (true, AllStopped, Light) => png!("linux/22/stopped-light.png"),
+        (true, AllStopped, Dark) => png!("linux/22/stopped-dark.png"),
+        (true, Running, Light) => png!("linux/22/running-light.png"),
+        (true, Running, Dark) => png!("linux/22/running-dark.png"),
+        (true, Busy, Light) => png!("linux/22/busy-light.png"),
+        (true, Busy, Dark) => png!("linux/22/busy-dark.png"),
+        (true, Error, Light) => png!("linux/22/error-light.png"),
+        (true, Error, Dark) => png!("linux/22/error-dark.png"),
+        (false, AllStopped, Light) => png!("linux/24/stopped-light.png"),
+        (false, AllStopped, Dark) => png!("linux/24/stopped-dark.png"),
+        (false, Running, Light) => png!("linux/24/running-light.png"),
+        (false, Running, Dark) => png!("linux/24/running-dark.png"),
+        (false, Busy, Light) => png!("linux/24/busy-light.png"),
+        (false, Busy, Dark) => png!("linux/24/busy-dark.png"),
+        (false, Error, Light) => png!("linux/24/error-light.png"),
+        (false, Error, Dark) => png!("linux/24/error-dark.png"),
+    }
 }
 
-pub fn decode_png(_bytes: &[u8]) -> Result<Rgba, IconError> {
-    todo!()
+pub fn decode_png(bytes: &[u8]) -> Result<Rgba, IconError> {
+    let err = |e: &dyn std::fmt::Display| IconError(e.to_string());
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .map_err(|e| err(&e))?;
+    let size = reader
+        .output_buffer_size()
+        .ok_or_else(|| IconError("image too large".into()))?;
+    let mut buf = vec![0; size];
+    let info = reader.next_frame(&mut buf).map_err(|e| err(&e))?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return Err(IconError(format!(
+            "expected 8-bit RGBA, got {:?}/{:?}",
+            info.color_type, info.bit_depth
+        )));
+    }
+    buf.truncate(info.buffer_size());
+    Ok(Rgba {
+        width: info.width,
+        height: info.height,
+        data: buf,
+    })
 }
 
 /// SNI `IconPixmap`은 ARGB32(네트워크 바이트 순서)다.
-pub fn rgba_to_argb(_image: &Rgba) -> Vec<u8> {
-    todo!()
+pub fn rgba_to_argb(image: &Rgba) -> Vec<u8> {
+    image
+        .data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|&[r, g, b, a]| [a, r, g, b])
+        .collect()
 }
 
 #[cfg(test)]

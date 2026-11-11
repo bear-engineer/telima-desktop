@@ -1,7 +1,7 @@
 //! `TrayModel` → 플랫폼 중립 메뉴 트리. OS 호출 없는 순수 함수.
 
 use telima_app::AppCommand;
-use telima_app::view::tray::TrayModel;
+use telima_app::view::tray::{CommandItem, TrayModel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuNode {
@@ -19,8 +19,43 @@ pub enum MenuNode {
 }
 
 /// 위에서 아래: [오류 행] 요약, 구분선, [프로필별 하위 메뉴, 구분선], 창 열기, 새로고침, 구분선, 종료.
-pub fn menu_nodes(_model: &TrayModel) -> Vec<MenuNode> {
-    todo!()
+pub fn menu_nodes(model: &TrayModel) -> Vec<MenuNode> {
+    let mut nodes = Vec::new();
+    if let Some(error) = &model.error {
+        nodes.push(command(error));
+    }
+    nodes.push(MenuNode::Item {
+        label: model.summary.clone(),
+        enabled: false,
+        command: None,
+    });
+    nodes.push(MenuNode::Separator);
+    for row in &model.profiles {
+        nodes.push(MenuNode::Submenu {
+            label: format!("{} — {}", row.name, row.status),
+            items: vec![
+                command(&row.start),
+                command(&row.stop),
+                command(&row.restart),
+            ],
+        });
+    }
+    if !model.profiles.is_empty() {
+        nodes.push(MenuNode::Separator);
+    }
+    nodes.push(command(&model.open_window));
+    nodes.push(command(&model.refresh));
+    nodes.push(MenuNode::Separator);
+    nodes.push(command(&model.quit));
+    nodes
+}
+
+fn command(item: &CommandItem) -> MenuNode {
+    MenuNode::Item {
+        label: item.label.clone(),
+        enabled: item.enabled,
+        command: Some(item.command.clone()),
+    }
 }
 
 #[cfg(test)]
