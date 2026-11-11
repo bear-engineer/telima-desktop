@@ -7445,6 +7445,7 @@ dependencies = [
  "telima-colima",
  "telima-core",
  "telima-docker",
+ "telima-tray",
  "telima-ui",
  "tokio",
 ]

@@ -16,6 +16,7 @@ telima-app.workspace = true
 telima-colima.workspace = true
 telima-docker.workspace = true
 telima-ui.workspace = true
+telima-tray = { path = "../telima-tray" }
 gpui-kit.workspace = true
 anyhow.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
