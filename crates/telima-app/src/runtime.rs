@@ -5,6 +5,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::future::{AbortHandle, abortable};
 use telima_core::container::{Container, DiskUsage, Image, LogLine, PruneReport, Volume};
@@ -273,6 +274,9 @@ impl ContainerEngine for SharedEngine {
     }
 }
 
+/// How often the binary reads the profile list for the tray while no window is open.
+pub const PROFILE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Handle to work started through [`App`]. Dropping it lets the work finish.
 #[derive(Debug, Clone)]
 pub struct Task(AbortHandle);
@@ -373,6 +377,16 @@ impl App {
         done: impl FnOnce(Result<Vec<Profile>, AppError>) + Send + 'static,
     ) -> Task {
         self.run(|app| async move { app.profiles.list().await }, done)
+    }
+
+    /// Read the profile list again: [`crate::AppCommand::Refresh`] and the status poll
+    /// ([`PROFILE_POLL_INTERVAL`]) call this.
+    pub fn refresh_profiles(
+        &self,
+        done: impl FnOnce(Result<Vec<Profile>, AppError>) + Send + 'static,
+    ) -> Task {
+        let _ = done;
+        todo!("RED")
     }
 
     pub fn create_profile(
@@ -693,6 +707,32 @@ mod tests {
 
     fn mac() -> Fixture {
         fixture(FakeVm::default(), FakeEngine::default(), HostOs::MacOs)
+    }
+
+    #[test]
+    fn tray_refresh_profiles_reads_the_list_again() {
+        let f = mac();
+        *f.vm.profiles.lock().unwrap() = vec![profile("dev")];
+        let (first, fill) = slot();
+        f.app.refresh_profiles(fill);
+        f.spawner.run_all();
+        assert_eq!(first.lock().unwrap().take(), Some(Ok(vec![profile("dev")])));
+
+        f.vm.profiles.lock().unwrap().push(profile("alpha"));
+        let (second, fill) = slot();
+        f.app.refresh_profiles(fill);
+        f.spawner.run_all();
+        // Sorted by name, like the sidebar list.
+        assert_eq!(
+            second.lock().unwrap().take(),
+            Some(Ok(vec![profile("alpha"), profile("dev")]))
+        );
+        assert_eq!(f.vm.calls(), ["list", "list"]);
+    }
+
+    #[test]
+    fn tray_poll_interval_is_ten_seconds() {
+        assert_eq!(PROFILE_POLL_INTERVAL, Duration::from_secs(10));
     }
 
     /// A place for a callback to put its value, and the callback that fills it.

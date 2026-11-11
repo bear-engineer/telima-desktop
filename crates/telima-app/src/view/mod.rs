@@ -7,6 +7,7 @@ pub mod notice;
 pub mod progress;
 pub mod start_steps;
 pub mod time_text;
+pub mod tray;
 
 pub use notice::{Notice, NoticeKind, error_text, notice};
 pub use start_steps::{START_STEPS, StartProgress, StepState, start_progress, start_step_of};
