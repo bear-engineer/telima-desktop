@@ -25,9 +25,11 @@ fn ok(stdout: &str) -> Reply {
     }
 }
 
+type Responder = Box<dyn Fn(&[String]) -> Reply + Send + Sync>;
+
 struct Fake {
     calls: Mutex<Vec<Vec<String>>>,
-    respond: Box<dyn Fn(&[String]) -> Reply + Send + Sync>,
+    respond: Responder,
 }
 
 impl Fake {
