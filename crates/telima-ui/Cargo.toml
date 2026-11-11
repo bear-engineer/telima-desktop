@@ -11,8 +11,11 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+telima-core.workspace = true
 telima-app.workspace = true
 gpui-kit.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+telima-app = { workspace = true, features = ["testing"] }
+futures = { workspace = true, features = ["executor"] }

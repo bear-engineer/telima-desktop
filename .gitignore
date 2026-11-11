@@ -10,3 +10,4 @@ AuthKey_*.p8
 *.mobileprovision
 *.pem
 *.key
+__pycache__/

@@ -17,3 +17,5 @@ telima-colima.workspace = true
 telima-docker.workspace = true
 telima-ui.workspace = true
 gpui-kit.workspace = true
+anyhow.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }

@@ -12,3 +12,10 @@ workspace = true
 
 [dependencies]
 telima-core.workspace = true
+bollard.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
