@@ -91,6 +91,12 @@ impl Fixture {
 }
 
 fn fixture(cx: &mut TestAppContext) -> Fixture {
+    let f = fixture_unsettled(cx);
+    f.settle(cx);
+    f
+}
+
+fn fixture_unsettled(cx: &mut TestAppContext) -> Fixture {
     let vm = FakeVm {
         progress_lines: vec!["starting colima".into(), "done".into()],
         ..Default::default()
@@ -119,14 +125,12 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
         spawner.clone(),
     );
     let view = cx.new(|cx| MainView::new(app, cx));
-    let f = Fixture {
+    Fixture {
         vm,
         spawner,
         asked,
         view,
-    };
-    f.settle(cx);
-    f
+    }
 }
 
 #[gpui_kit::test]
@@ -266,4 +270,128 @@ fn new_profile_opens_an_empty_create_form(cx: &mut TestAppContext) {
         .read_with(cx, |v, _| v.editor().cloned())
         .expect("새 프로필 opens the editor");
     assert_eq!(editor.read_with(cx, |e, _| e.mode().clone()), Mode::Create);
+}
+
+// --- telima-design-r1: layout states (H1 H2 H6 M1 M9 M10 M12) ---
+
+use super::{HeaderAction, Msg, Screen};
+use telima_app::AppError;
+use telima_core::ports::PortError;
+
+#[gpui_kit::test]
+fn shows_loading_until_the_first_list_arrives(cx: &mut TestAppContext) {
+    let f = fixture_unsettled(cx);
+    assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Loading);
+    f.settle(cx);
+    assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Profile);
+}
+
+#[gpui_kit::test]
+fn empty_list_shows_the_empty_state(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.vm.profiles.lock().unwrap().clear();
+    f.view.update(cx, |v, _| v.refresh());
+    f.settle(cx);
+    assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Empty);
+}
+
+#[gpui_kit::test]
+fn colima_not_installed_has_its_own_state_with_a_korean_hint(cx: &mut TestAppContext) {
+    let f = fixture_unsettled(cx);
+    f.view.update(cx, |v, cx| {
+        v.inbox.lock().unwrap().push(Msg::Profiles(Err(AppError::Port(
+            PortError::Unavailable("colima not installed".into()),
+        ))));
+        v.pump(cx);
+    });
+    match f.view.read_with(cx, |v, _| v.screen()) {
+        Screen::NotInstalled { message, hint } => {
+            assert_eq!(message, "Colima가 설치되어 있지 않습니다.");
+            assert_eq!(hint, Some("brew install colima"));
+        }
+        other => panic!("expected NotInstalled, got {other:?}"),
+    }
+}
+
+#[gpui_kit::test]
+fn errors_are_shown_in_korean_not_as_to_string(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| {
+        v.inbox.lock().unwrap().push(Msg::Profiles(Err(AppError::Port(
+            PortError::Failed("exit status 1".into()),
+        ))));
+        v.pump(cx);
+    });
+    let err = f.view.read_with(cx, |v, _| v.error().map(str::to_owned));
+    assert_eq!(
+        err.as_deref(),
+        Some("작업을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+    );
+}
+
+#[gpui_kit::test]
+fn header_shows_only_state_valid_actions(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("default", cx));
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.header_actions()),
+        [HeaderAction::Restart, HeaderAction::Stop]
+    );
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.header_actions()),
+        [HeaderAction::Start]
+    );
+    f.view.update(cx, |v, cx| v.start(cx));
+    assert!(f.view.read_with(cx, |v, _| v.header_actions()).is_empty());
+}
+
+#[gpui_kit::test]
+fn create_mode_replaces_the_header_and_hides_profile_actions(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("default", cx));
+    f.view.update(cx, |v, cx| v.new_profile(cx));
+    assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Create);
+    assert!(f.view.read_with(cx, |v, _| v.header_actions()).is_empty());
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.crumb()).as_deref(),
+        Some("새 프로필")
+    );
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Profile);
+}
+
+#[gpui_kit::test]
+fn title_crumb_names_the_selected_profile(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.crumb()).as_deref(),
+        Some("work")
+    );
+}
+
+#[gpui_kit::test]
+fn inspector_lists_the_config_and_the_docker_socket(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    let ins = f.view.read_with(cx, |v, _| v.inspector()).expect("구성 aside");
+    let labels: Vec<&str> = ins.rows.iter().map(|(l, _)| *l).collect();
+    assert_eq!(
+        labels,
+        ["런타임", "VM 종류", "마운트", "아키텍처", "CPU", "메모리", "디스크", "IP 주소"]
+    );
+    assert_eq!(ins.socket, "~/.colima/work/docker.sock");
+    assert!(ins.can_edit && ins.can_delete);
+}
+
+#[gpui_kit::test]
+fn tabs_show_counts_of_loaded_lists(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    f.settle(cx);
+    let n = f.view.read_with(cx, |v, cx| v.tab_count(Tab::Containers, cx));
+    assert_eq!(n, Some(1));
+    let none = f.view.read_with(cx, |v, cx| v.tab_count(Tab::Volumes, cx));
+    assert_eq!(none, None);
 }
