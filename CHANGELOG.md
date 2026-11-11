@@ -2,6 +2,12 @@
 
 이 파일의 `## vX.Y.Z` 절은 릴리스 워크플로(`.github/workflows/release.yml`)가 GitHub 릴리스 노트로 그대로 쓴다.
 
+## 다음 릴리스
+
+### 고침
+
+- 프로필 편집에서 바꾼 마운트 방식, Rosetta, IP 주소가 저장되지 않던 문제. 이제 `colima.yaml`의 `mountType`, `rosetta`, `network.address`에 쓴다. 실행 중인 프로필은 재시작해야 적용된다.
+
 ## v0.1.0
 
 첫 릴리스다. 초기 단계이며 macOS(Apple Silicon)용 서명하지 않은 `telima.app` zip과 Linux x86_64용 tar.gz로 배포한다. Colima 0.10.3 이상이 필요하고 0.10.3에서 확인했다.

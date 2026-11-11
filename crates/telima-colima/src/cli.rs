@@ -217,30 +217,44 @@ fn yaml_set_mounts(text: &str, mounts: &[Mount]) -> String {
 
 /// Set `enabled:` inside the top-level `kubernetes:` block; append the block when missing.
 fn yaml_set_kubernetes(text: &str, enabled: bool) -> String {
+    yaml_set_nested(text, "kubernetes", "enabled", enabled)
+}
+
+/// Sets `block:\n  key: value` (first occurrence inside the top-level `block`), keeping the
+/// rest of the file; appends the key to the block, or the whole block, when missing.
+fn yaml_set_nested(text: &str, block: &str, key: &str, value: impl std::fmt::Display) -> String {
+    let head = format!("{block}:");
+    let field = format!("{key}:");
     let mut in_block = false;
     let mut done = false;
     let mut out: String = text
         .split_inclusive('\n')
         .map(|l| {
-            if l.starts_with("kubernetes:") {
+            if l.starts_with(&head) {
                 in_block = true;
             } else if in_block && !l.starts_with([' ', '\t']) && !l.trim().is_empty() {
                 in_block = false;
-            } else if in_block && !done && l.trim_start().starts_with("enabled:") {
+            } else if in_block && !done && l.trim_start().starts_with(&field) {
                 done = true;
                 let indent = &l[..l.len() - l.trim_start().len()];
                 let nl = if l.ends_with('\n') { "\n" } else { "" };
-                return format!("{indent}enabled: {enabled}{nl}");
+                return format!("{indent}{key}: {value}{nl}");
             }
             l.to_owned()
         })
         .collect();
-    if !done && !text.lines().any(|l| l.starts_with("kubernetes:")) {
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str(&format!("kubernetes:\n  enabled: {enabled}\n"));
+    if done {
+        return out;
     }
+    if let Some(at) = out.lines().position(|l| l.starts_with(&head)) {
+        let mut lines: Vec<String> = out.split_inclusive('\n').map(str::to_owned).collect();
+        lines.insert(at + 1, format!("  {key}: {value}\n"));
+        return lines.concat();
+    }
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&format!("{head}\n  {key}: {value}\n"));
     out
 }
 
@@ -315,7 +329,7 @@ fn yaml_network_address(text: &str) -> bool {
 }
 
 /// Replace a top-level scalar (append when missing); everything else is kept byte for byte.
-fn yaml_set_top(text: &str, key: &str, value: u32) -> String {
+fn yaml_set_top(text: &str, key: &str, value: impl std::fmt::Display) -> String {
     let prefix = format!("{key}:");
     let mut found = false;
     let mut out: String = text
@@ -552,6 +566,9 @@ impl<R: CommandRunner> VmManager for ColimaCli<R> {
         let text = yaml_set_top(&text, "disk", spec.disk_gib);
         let text = yaml_set_mounts(&text, &spec.mounts);
         let text = yaml_set_kubernetes(&text, spec.kubernetes);
+        let text = yaml_set_top(&text, "mountType", mount_type_arg(spec.mount_type));
+        let text = yaml_set_top(&text, "rosetta", spec.rosetta);
+        let text = yaml_set_nested(&text, "network", "address", spec.network_address);
         std::fs::write(&path, text)
             .map_err(|e| PortError::Failed(format!("writing colima.yaml: {e}")))
     }

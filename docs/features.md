@@ -53,7 +53,7 @@ telima가 하는 일과 그때 실제로 실행하는 명령을 영역별로 적
 
 - 프로필의 "편집" 버튼으로 연다. 같은 폼을 쓰고 버튼이 "저장"이다.
 - "이름", "VM 종류", 런타임은 만든 뒤 바꿀 수 없다("만든 뒤에는 바꿀 수 없습니다"). 디스크는 늘리기만 할 수 있다.
-- 저장은 Colima 명령을 실행하지 않고 프로필의 `colima.yaml`에서 `cpu`, `memory`, `disk`, `mounts`, `kubernetes` 항목을 고쳐 쓴다. 다른 줄과 주석은 그대로 둔다.
+- 저장은 Colima 명령을 실행하지 않고 프로필의 `colima.yaml`에서 `cpu`, `memory`, `disk`, `mounts`, `kubernetes`, `mountType`, `rosetta`, `network.address` 항목을 고쳐 쓴다. 다른 줄과 주석은 그대로 둔다. VM 종류와 런타임은 만든 뒤 바꿀 수 없다.
   근거: `crates/telima-colima/src/cli.rs`의 `update`
 - 재시작 규칙: CPU, 메모리, 디스크, 마운트 방식, Rosetta, 네트워크 주소, 마운트, Kubernetes는 VM이 다시 시작할 때 적용된다. 실행 중인 프로필에서 이 값을 바꾸면 폼 아래에 "… 변경은 프로필을 재시작해야 적용됩니다."가 나온다. 중지된 프로필은 다음 시작 때 적용된다. 앱이 자동으로 재시작하지는 않는다.
   근거: `crates/telima-core/src/rules.rs`의 `RESTART_FIELDS`, `crates/telima-app/src/view/daily.rs`의 `restart_required_text`
@@ -210,7 +210,6 @@ telima가 하는 일과 그때 실제로 실행하는 명령을 영역별로 적
 - Linux 트레이는 StatusNotifierItem 호스트가 있어야 한다. GNOME은 AppIndicator 확장이 필요하다. Linux 밝은 패널용 아이콘은 확인하지 못했다.
 - 창 닫기 안내는 설정 저장소가 없어 실행할 때마다 다시 나온다.
 - 런타임은 docker만 지원한다.
-- 편집 폼에서 마운트 방식, Rosetta, IP 주소도 바꿀 수 있지만 저장은 `colima.yaml`의 `cpu`, `memory`, `disk`, `mounts`, `kubernetes`만 고친다.
 - 개별 이미지·볼륨 삭제는 화면에 없다. 정리(prune)만 있다.
 - `TELIMA_APPEARANCE`, `TELIMA_COLIMA_VERSION`은 디버그 빌드 전용이다.
 - 앱은 서명·공증하지 않는다.
