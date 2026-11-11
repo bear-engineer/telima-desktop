@@ -1,5 +1,7 @@
 //! Composition root: builds adapters, injects them, starts the GPUI application.
 
+mod dev_override;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
