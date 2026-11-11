@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use bollard::errors::Error;
 use bollard::query_parameters::{
     ListContainersOptionsBuilder, ListImagesOptionsBuilder, LogsOptionsBuilder,
-    PruneImagesOptionsBuilder, RemoveContainerOptionsBuilder, RestartContainerOptions,
+    PruneImagesOptionsBuilder, PruneVolumesOptionsBuilder, RemoveContainerOptionsBuilder,
+    RestartContainerOptions,
 };
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::StreamExt;
@@ -40,6 +41,12 @@ fn map_error(err: Error) -> PortError {
         }
         other => PortError::Failed(other.to_string()),
     }
+}
+
+/// Volume prune filters. Docker API >= 1.42 prunes only anonymous volumes unless
+/// `all=true`; the app's prune preview (`Volume::is_unused`) counts named volumes too.
+fn prune_volume_filters() -> HashMap<String, Vec<String>> {
+    HashMap::from([("all".to_owned(), vec!["true".to_owned()])])
 }
 
 /// Docker Engine API client bound to one engine socket (one Colima profile).
@@ -170,9 +177,13 @@ impl ContainerEngine for DockerEngine {
     }
 
     async fn prune_volumes(&self) -> PortResult<PruneReport> {
+        let filters = prune_volume_filters();
+        let options = PruneVolumesOptionsBuilder::default()
+            .filters(&filters)
+            .build();
         let response = self
             .docker
-            .prune_volumes(None::<bollard::query_parameters::PruneVolumesOptions>)
+            .prune_volumes(Some(options))
             .await
             .map_err(map_error)?;
         Ok(map::map_volume_prune(&response))
@@ -235,6 +246,12 @@ mod tests {
             map_error(Error::IOError { err: io }),
             PortError::Failed(_)
         ));
+    }
+
+    #[test]
+    fn volume_prune_filter_includes_named_volumes() {
+        let filters = prune_volume_filters();
+        assert_eq!(filters.get("all"), Some(&vec!["true".to_owned()]));
     }
 
     #[test]
