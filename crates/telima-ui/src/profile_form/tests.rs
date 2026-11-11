@@ -358,3 +358,171 @@ fn inline_form_is_capped_and_buttons_sit_at_its_right_edge(cx: &mut TestAppConte
         name.right()
     );
 }
+
+#[gpui_kit::test]
+fn mounts_editor_adds_edits_and_removes_rows_with_app_messages(cx: &mut TestAppContext) {
+    let (vm, spawner, app) = setup(&[]);
+    let (form, cx) = cx.add_window_view(|_, cx| ProfileEditor::create(app, HostOs::MacOs, cx));
+    cx.run_until_parked();
+    form.update(cx, |f, cx| f.set_name("dev", cx));
+    let add = cx
+        .debug_bounds("mount-add")
+        .expect("add mount button rendered");
+    cx.simulate_click(add.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(form.read_with(cx, |f, _| f.draft().mounts.len()), 1);
+    assert!(!form.read_with(cx, |f, _| f.draft().mounts[0].writable));
+
+    form.update(cx, |f, cx| {
+        f.set_mount_path(0, "src", cx);
+        f.submit(cx);
+    });
+    spawner.run_all();
+    assert!(!vm.calls().iter().any(|c| c.starts_with("create")));
+    let errs = form.read_with(cx, |f, _| f.violations_for(Field::Mounts));
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains("절대 경로"), "{errs:?}");
+    assert!(
+        form.read_with(cx, |f, _| f.violations_for(Field::Name))
+            .is_empty()
+    );
+
+    form.update(cx, |f, cx| f.set_mount_path(0, "/Users/me/src", cx));
+    cx.run_until_parked();
+    let sw = cx
+        .debug_bounds("switch-mount-writable-0")
+        .expect("writable switch rendered");
+    cx.simulate_click(sw.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(form.read_with(cx, |f, _| f.draft().mounts[0].writable));
+
+    form.update(cx, |f, cx| {
+        f.add_mount(cx);
+        f.set_mount_path(1, "/Users/me/src", cx);
+    });
+    let errs = form.read_with(cx, |f, _| f.violations_for(Field::Mounts));
+    assert!(errs.iter().any(|e| e.contains("두 번")), "{errs:?}");
+    let rm = cx
+        .debug_bounds("mount-remove-1")
+        .expect("remove button rendered");
+    cx.simulate_click(rm.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(form.read_with(cx, |f, _| f.draft().mounts.len()), 1);
+    assert!(!form.read_with(cx, |f, _| f.has_violations()));
+
+    form.update(cx, |f, cx| f.submit(cx));
+    spawner.run_all();
+    form.update(cx, |f, cx| f.pump(cx));
+    assert!(vm.calls().contains(&"create dev".to_string()));
+}
+
+#[gpui_kit::test]
+fn kubernetes_switch_and_edit_restart_hint(cx: &mut TestAppContext) {
+    let (_, _, app) = setup(&[]);
+    let (form, cx) =
+        cx.add_window_view(|_, cx| ProfileEditor::create(app.clone(), HostOs::MacOs, cx));
+    cx.run_until_parked();
+    assert!(!form.read_with(cx, |f, _| f.draft().kubernetes));
+    assert!(
+        form.read_with(cx, |f, _| f.restart_hint()).is_none(),
+        "create needs no restart"
+    );
+    let b = cx
+        .debug_bounds("switch-kubernetes")
+        .expect("kubernetes switch rendered");
+    cx.simulate_click(b.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(form.read_with(cx, |f, _| f.draft().kubernetes));
+
+    let (edit, cx) =
+        cx.add_window_view(|_, cx| ProfileEditor::edit(app, HostOs::MacOs, spec("dev"), cx));
+    cx.run_until_parked();
+    assert!(edit.read_with(cx, |f, _| f.restart_hint()).is_none());
+    edit.update(cx, |f, cx| f.set_kubernetes(true, cx));
+    let hint = edit
+        .read_with(cx, |f, _| f.restart_hint())
+        .expect("restart hint");
+    assert!(hint.contains("Kubernetes"), "{hint}");
+    edit.update(cx, |f, cx| {
+        f.add_mount(cx);
+        f.set_mount_path(0, "/Users/me/src", cx);
+    });
+    let hint = edit.read_with(cx, |f, _| f.restart_hint()).unwrap();
+    assert!(hint.contains("마운트"), "{hint}");
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("restart-hint").is_some(),
+        "hint drawn in edit mode"
+    );
+}
+
+#[gpui_kit::test]
+fn delete_data_switch_defaults_off_recomputes_copy_and_passes_the_option(cx: &mut TestAppContext) {
+    let (vm, spawner, app) = setup(&[]);
+    let name = ProfileName::parse("dev").unwrap();
+    let sizes = vec![Some(1u64 << 30)];
+    let copy = confirm_delete_profile(&name, 2, &sizes, DeleteOptions::default());
+    let off_body = copy.body.clone();
+    let (dialog, cx) = cx.add_window_view(|_, cx| {
+        DeleteConfirm::new(app, name.clone(), copy, cx).with_facts(2, sizes.clone())
+    });
+    cx.run_until_parked();
+    assert!(
+        !dialog.read_with(cx, |d, _| d.options().data),
+        "off by default"
+    );
+    assert_eq!(dialog.read_with(cx, |d, _| d.copy().body.clone()), off_body);
+
+    let b = cx
+        .debug_bounds("switch-delete-data")
+        .expect("data switch rendered");
+    cx.simulate_click(b.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(dialog.read_with(cx, |d, _| d.options().data));
+    let on = confirm_delete_profile(&name, 2, &sizes, DeleteOptions { data: true });
+    assert_eq!(dialog.read_with(cx, |d, _| d.copy().clone()), on);
+
+    dialog.update(cx, |d, cx| {
+        d.set_typed("dev", cx);
+        d.confirm(cx);
+    });
+    spawner.run_all();
+    dialog.update(cx, |d, cx| d.pump(cx));
+    assert!(vm.calls().contains(&"delete dev --data".to_string()));
+}
+
+#[test]
+fn dialogs_use_the_motion_tokens() {
+    // M13: dialogs fade in through components::dialog (motion::FAST, ease-out), never their own
+    // durations or easing.
+    for (file, src) in [
+        ("delete.rs", include_str!("delete.rs")),
+        ("editor.rs", include_str!("editor.rs")),
+    ] {
+        assert!(
+            src.contains("fade_in("),
+            "{file} does not use the dialog fade"
+        );
+        for banned in ["from_millis", "from_secs", "Animation::new", "with_easing"] {
+            assert!(!src.contains(banned), "{file} has its own motion: {banned}");
+        }
+    }
+    let dialog = include_str!("../components/dialog.rs");
+    assert!(dialog.contains("motion::FAST") && dialog.contains("motion::ease_out"));
+}
+
+#[test]
+fn profile_form_views_use_no_literal_colors_or_sizes() {
+    for (file, src) in [
+        ("delete.rs", include_str!("delete.rs")),
+        ("editor.rs", include_str!("editor.rs")),
+        ("widgets.rs", include_str!("widgets.rs")),
+    ] {
+        for banned in [
+            "rgb(", "rgba(", "hsla(0x", "px(0.", "px(1", "px(2", "px(3", "px(4", "px(5", "px(6",
+            "px(7", "px(8", "px(9",
+        ] {
+            assert!(!src.contains(banned), "{file} has a literal: {banned}");
+        }
+    }
+}
