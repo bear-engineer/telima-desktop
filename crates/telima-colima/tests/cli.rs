@@ -511,8 +511,14 @@ async fn update_writes_mount_type_rosetta_and_network_address() {
     let got = std::fs::read_to_string(&path).unwrap();
     assert!(got.contains("mountType: sshfs\n"), "{got}");
     assert!(got.contains("rosetta: false\n"), "{got}");
-    assert!(got.contains("network:\n  address: false\n  dns: []\n"), "{got}");
-    assert!(got.contains("vmType: vz\n"), "vmType is not editable: {got}");
+    assert!(
+        got.contains("network:\n  address: false\n  dns: []\n"),
+        "{got}"
+    );
+    assert!(
+        got.contains("vmType: vz\n"),
+        "vmType is not editable: {got}"
+    );
     let back = cli(&fake, home).spec(&name("alpha")).await.unwrap();
     assert_eq!(back.mount_type, MountType::Sshfs);
     assert!(!back.rosetta);
