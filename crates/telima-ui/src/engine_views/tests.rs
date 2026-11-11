@@ -412,13 +412,16 @@ fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
     let profile = ProfileName::parse("dev").unwrap();
     view.update(cx, |v, cx| v.set_target(Some(profile), Tab::Containers, cx));
     let main = metric::WINDOW_W - metric::SIDEBAR - metric::INSPECTOR;
-    for w in [metric::WINDOW_W, main] {
+    for w in [metric::WINDOW_W, metric::ID_COL_BREAKPOINT, main] {
         cx.simulate_resize(size(px(w), px(metric::WINDOW_H)));
         spawner.run_all();
         view.update(cx, |v, cx| {
             v.pump(cx);
             v.select("c1", cx);
         });
+        cx.run_until_parked();
+        // The panel re-lays out once it has measured its new width.
+        cx.update(|window, _| window.refresh());
         cx.run_until_parked();
         let row = cx.debug_bounds("ctr-row-c1").expect("row rendered");
         let actions = cx.debug_bounds("ctr-actions-c1").expect("actions rendered");
@@ -442,7 +445,35 @@ fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
         );
         assert_eq!(head.left(), actions.left(), "header misaligned at {w}");
         assert_eq!(head.size.width, actions.size.width);
+        // ID column at narrow widths: hidden below the breakpoint, else a full 12-char ID.
+        let id_shown = w >= metric::ID_COL_BREAKPOINT;
+        assert_eq!(
+            cx.debug_bounds("ctr-cell-c1-1").is_some(),
+            id_shown,
+            "ID cell at {w}"
+        );
+        assert_eq!(
+            cx.debug_bounds("ctr-header-1").is_some(),
+            id_shown,
+            "ID header at {w}"
+        );
+        if id_shown {
+            let need = mono_text_width(cx, "0123456789ab");
+            let id = cx.debug_bounds("ctr-cell-c1-1").expect("ID cell");
+            assert!(
+                id.size.width >= need,
+                "ID cell {id:?} narrower than {need:?} at {w}"
+            );
+        } else {
+            assert!(
+                cx.debug_bounds("ctr-name-c1").is_some(),
+                "이름 cell carries the ID tooltip at {w}"
+            );
+        }
         for col in 0..super::copy::CONTAINER_COLS.len() {
+            if col == 1 && !id_shown {
+                continue;
+            }
             let name: &'static str = Box::leak(format!("ctr-cell-c1-{col}").into_boxed_str());
             let hname: &'static str = Box::leak(format!("ctr-header-{col}").into_boxed_str());
             let c = cx.debug_bounds(name).expect("cell rendered");
@@ -495,6 +526,20 @@ fn mono_text_width(cx: &mut VisualTestContext, s: &str) -> gpui_kit::Pixels {
             .layout_line(s, px(font::CODE.size), &[run], None)
             .width
     })
+}
+
+/// ID column at narrow widths: the panel hides 1 (ID) below the breakpoint token.
+#[test]
+fn id_column_hides_below_the_breakpoint() {
+    use super::model::container_columns;
+    assert_eq!(
+        container_columns(metric::ID_COL_BREAKPOINT - 1.0),
+        [0, 2, 3, 4, 5]
+    );
+    assert_eq!(
+        container_columns(metric::ID_COL_BREAKPOINT),
+        [0, 1, 2, 3, 4, 5]
+    );
 }
 
 /// F7: several mappings show the first plus a count; one mapping or none stays as is.

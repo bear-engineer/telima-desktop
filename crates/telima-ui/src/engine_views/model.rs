@@ -7,6 +7,11 @@ use telima_core::container::{ContainerState, LogLine};
 
 use crate::components::status::Status;
 
+/// Columns of `copy::CONTAINER_COLS` shown at an engine panel width (px), by index.
+pub fn container_columns(_panel_w: f32) -> Vec<usize> {
+    (0..crate::engine_views::copy::CONTAINER_COLS.len()).collect()
+}
+
 /// Prefix of `container_status_text` for a non-zero exit (telima-app view copy).
 const ERROR_PREFIX: &str = "오류";
 

@@ -249,6 +249,11 @@ pub mod metric {
     pub const FIELD_SELECT: f32 = 220.0;
     /// Search field in a panel header (Containers.dc.html 로그 검색).
     pub const FIELD_SEARCH: f32 = 160.0;
+    /// Short ID table column: 12 IBM Plex Mono characters at the code size (Containers.dc.html).
+    pub const COL_ID: f32 = 88.0;
+    /// Engine panel width below which the containers table hides its ID column (the ID is
+    /// then in the 이름 cell's tooltip), so 상태 and 포트 keep their room at the 600 px main pane.
+    pub const ID_COL_BREAKPOINT: f32 = 720.0;
     /// Dialog widths (confirm dialogs use the small one).
     pub const DIALOG_W: f32 = 420.0;
     pub const DIALOG_W_SM: f32 = 360.0;
@@ -419,6 +424,9 @@ mod tests {
         );
         assert_eq!((CHIP_H, BTN, BTN_SM, TAB_H), (22.0, 28.0, 24.0, 36.0));
         assert_eq!(FIELD_SEARCH, 160.0);
+        assert_eq!((COL_ID, ID_COL_BREAKPOINT), (88.0, 720.0));
+        // The main pane (window minus sidebar and inspector) is below the ID breakpoint.
+        assert!(WINDOW_W - SIDEBAR - INSPECTOR < ID_COL_BREAKPOINT);
         assert_eq!((DOT, SKELETON_H, BAR_H, FOCUS_RING), (8.0, 10.0, 4.0, 2.0));
         assert_eq!((SWITCH_W, SWITCH_H, SWITCH_KNOB), (28.0, 16.0, 12.0));
         assert_eq!((WINDOW_W, WINDOW_H), (1080.0, 720.0));
