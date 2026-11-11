@@ -7437,7 +7437,7 @@ dependencies = [
 
 [[package]]
 name = "telima"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "gpui-kit",
@@ -7452,7 +7452,7 @@ dependencies = [
 
 [[package]]
 name = "telima-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "telima-core",
@@ -7461,7 +7461,7 @@ dependencies = [
 
 [[package]]
 name = "telima-colima"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "serde",
@@ -7473,14 +7473,14 @@ dependencies = [
 
 [[package]]
 name = "telima-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "telima-docker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bollard",
  "futures-util",
@@ -7491,7 +7491,7 @@ dependencies = [
 
 [[package]]
 name = "telima-tray"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ksni",
  "png 0.18.1",
@@ -7502,7 +7502,7 @@ dependencies = [
 
 [[package]]
 name = "telima-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "gpui-kit",

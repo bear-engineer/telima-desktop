@@ -6,7 +6,7 @@ A desktop app for [Colima](https://github.com/abiosoft/colima) profiles and thei
 
 [한국어](README.md)
 
-> Status: v0.1.0, the first release. Early: few features, and they may change. The app is not signed or notarised.
+> Status: v0.1.1. Early: few features, and they may change. The app is not signed or notarised.
 
 The app's interface is in Korean only.
 
@@ -29,7 +29,7 @@ Download from [GitHub Releases](https://github.com/bear-engineer/telima-desktop/
 
 ### macOS (Apple Silicon)
 
-1. Unzip `telima-v0.1.0-macos-arm64.zip` to get `telima.app` and move it to `/Applications`.
+1. Unzip `telima-v0.1.1-macos-arm64.zip` to get `telima.app` and move it to `/Applications`.
 2. The app is unsigned, so macOS blocks the first launch. Either:
    - In Finder, right-click (or Control-click) `telima.app` → Open → Open. If your macOS version refuses, use System Settings → Privacy & Security → "Open Anyway".
    - Or remove the quarantine attribute:
@@ -42,11 +42,11 @@ Needs macOS 13 or later (`LSMinimumSystemVersion` in `scripts/bundle-macos.sh`).
 
 ### Linux (x86_64)
 
-`telima-v0.1.0-linux-x86_64.tar.gz` contains the `telima` binary, the desktop entry `io.github.bear_engineer.telima.desktop`, the icon directory `hicolor/` and the README.
+`telima-v0.1.1-linux-x86_64.tar.gz` contains the `telima` binary, the desktop entry `io.github.bear_engineer.telima.desktop`, the icon directory `hicolor/` and the README.
 
 ```sh
-tar -xzf telima-v0.1.0-linux-x86_64.tar.gz
-cd telima-v0.1.0-linux-x86_64
+tar -xzf telima-v0.1.1-linux-x86_64.tar.gz
+cd telima-v0.1.1-linux-x86_64
 install -Dm755 telima ~/.local/bin/telima
 install -Dm644 io.github.bear_engineer.telima.desktop ~/.local/share/applications/io.github.bear_engineer.telima.desktop
 mkdir -p ~/.local/share/icons

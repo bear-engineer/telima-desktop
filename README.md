@@ -6,7 +6,7 @@ macOS와 Linux에서 [Colima](https://github.com/abiosoft/colima) 프로필과 �
 
 [English](README.en.md)
 
-> 상태: v0.1.0, 첫 릴리스입니다. 초기 단계라 기능이 적고 바뀔 수 있습니다. 앱은 서명·공증하지 않습니다.
+> 상태: v0.1.1. 초기 단계라 기능이 적고 바뀔 수 있습니다. 앱은 서명·공증하지 않습니다.
 
 ## 주요 기능
 
@@ -27,7 +27,7 @@ macOS와 Linux에서 [Colima](https://github.com/abiosoft/colima) 프로필과 �
 
 ### macOS (Apple Silicon)
 
-1. `telima-v0.1.0-macos-arm64.zip`을 받아 풀면 `telima.app`이 나옵니다. 응용 프로그램(`/Applications`)으로 옮깁니다.
+1. `telima-v0.1.1-macos-arm64.zip`을 받아 풀면 `telima.app`이 나옵니다. 응용 프로그램(`/Applications`)으로 옮깁니다.
 2. 서명하지 않은 앱이라 처음 열 때 macOS가 막습니다. 다음 중 하나로 엽니다.
    - Finder에서 `telima.app`을 오른쪽 클릭(또는 Control 클릭) → 열기 → 열기. macOS 버전에 따라 이 방법이 막히면 시스템 설정 → 개인정보 보호 및 보안에서 "그래도 열기"를 누릅니다.
    - 터미널에서 격리 속성을 지웁니다.
@@ -40,11 +40,11 @@ macOS 13 이상이 필요합니다(`scripts/bundle-macos.sh`의 `LSMinimumSystem
 
 ### Linux (x86_64)
 
-`telima-v0.1.0-linux-x86_64.tar.gz`에는 실행 파일 `telima`, 데스크톱 항목 `io.github.bear_engineer.telima.desktop`, 아이콘 디렉터리 `hicolor/`, 이 README가 들어 있습니다.
+`telima-v0.1.1-linux-x86_64.tar.gz`에는 실행 파일 `telima`, 데스크톱 항목 `io.github.bear_engineer.telima.desktop`, 아이콘 디렉터리 `hicolor/`, 이 README가 들어 있습니다.
 
 ```sh
-tar -xzf telima-v0.1.0-linux-x86_64.tar.gz
-cd telima-v0.1.0-linux-x86_64
+tar -xzf telima-v0.1.1-linux-x86_64.tar.gz
+cd telima-v0.1.1-linux-x86_64
 install -Dm755 telima ~/.local/bin/telima
 install -Dm644 io.github.bear_engineer.telima.desktop ~/.local/share/applications/io.github.bear_engineer.telima.desktop
 mkdir -p ~/.local/share/icons

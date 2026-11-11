@@ -2,7 +2,7 @@
 
 이 파일의 `## vX.Y.Z` 절은 릴리스 워크플로(`.github/workflows/release.yml`)가 GitHub 릴리스 노트로 그대로 쓴다.
 
-## 다음 릴리스
+## v0.1.1
 
 ### 고침
 
