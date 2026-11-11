@@ -232,6 +232,67 @@ mod tests {
         assert!(vol.is_unused());
     }
 
+    fn named(name: &str) -> Volume {
+        Volume {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    fn usage(name: &str, size: i64, ref_count: i64) -> (String, i64, i64) {
+        (name.to_owned(), size, ref_count)
+    }
+
+    #[test]
+    fn list_volumes_take_size_and_ref_count_from_df_by_name() {
+        let list = vec![named("pgdata"), named("cache")];
+        let df = vec![usage("cache", 512, 0), usage("pgdata", 4096, 2)];
+        let out = map_volumes(&list, &df);
+        assert_eq!(out[0].name, "pgdata");
+        assert_eq!(out[0].size_bytes, Some(4096));
+        assert_eq!(out[0].ref_count, Some(2));
+        assert_eq!(out[1].size_bytes, Some(512));
+        assert_eq!(out[1].ref_count, Some(0));
+        assert!(out[1].is_unused());
+    }
+
+    #[test]
+    fn volume_missing_from_df_stays_unknown() {
+        let out = map_volumes(&[named("orphan")], &[usage("other", 1, 1)]);
+        assert_eq!(out[0].size_bytes, None);
+        assert_eq!(out[0].ref_count, None);
+    }
+
+    #[test]
+    fn empty_df_keeps_list_volumes_unknown() {
+        let out = map_volumes(&[named("data")], &[]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size_bytes, None);
+        assert_eq!(out[0].ref_count, None);
+    }
+
+    #[test]
+    fn list_usage_wins_over_df() {
+        let listed = Volume {
+            name: "data".into(),
+            usage_data: Some(VolumeUsageData {
+                size: 10,
+                ref_count: 1,
+            }),
+            ..Default::default()
+        };
+        let out = map_volumes(&[listed], &[usage("data", 999, 9)]);
+        assert_eq!(out[0].size_bytes, Some(10));
+        assert_eq!(out[0].ref_count, Some(1));
+    }
+
+    #[test]
+    fn df_sentinel_minus_one_is_unknown() {
+        let out = map_volumes(&[named("x")], &[usage("x", -1, -1)]);
+        assert_eq!(out[0].size_bytes, None);
+        assert_eq!(out[0].ref_count, None);
+    }
+
     #[test]
     fn volume_usage_sentinel_minus_one_is_unknown() {
         let v = Volume {
