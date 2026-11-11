@@ -885,4 +885,46 @@ mod tests {
         assert!(got.lock().unwrap().is_none());
         assert!(f.vm.calls().is_empty());
     }
+
+    #[test]
+    fn l6_app_exposes_status_version_container_start_stop_prune_and_delete_options() {
+        use telima_core::profile::{DeleteOptions, RuntimeInfo};
+        use telima_core::version::{ColimaVersion, VersionSupport};
+
+        let vm = FakeVm {
+            info: RuntimeInfo {
+                docker_server: Some("29.5.2".into()),
+                ..RuntimeInfo::default()
+            },
+            version: Some(ColimaVersion::new(0, 10, 3)),
+            ..FakeVm::default()
+        };
+        let f = fixture(vm, FakeEngine::default(), HostOs::MacOs);
+        let (info, done) = slot();
+        f.app.runtime_info(name("dev"), done);
+        let (check, done) = slot();
+        f.app.check_colima_version(done);
+        let (started, done) = slot();
+        f.app.start_container(name("dev"), "c1".into(), done);
+        let (stopped, done) = slot();
+        f.app.stop_container(name("dev"), "c1".into(), done);
+        let (pruned, done) = slot();
+        f.app.prune_cache(done);
+        let (deleted, done) = slot();
+        f.app
+            .delete_profile(name("dev"), "dev".into(), DeleteOptions { data: true }, done);
+        f.spawner.run_all();
+
+        let info = info.lock().unwrap().take().unwrap().unwrap();
+        assert_eq!(info.docker_server.as_deref(), Some("29.5.2"));
+        let check = check.lock().unwrap().take().unwrap().unwrap();
+        assert_eq!(check.support, VersionSupport::Supported);
+        assert!(started.lock().unwrap().take().unwrap().is_ok());
+        assert!(stopped.lock().unwrap().take().unwrap().is_ok());
+        assert!(pruned.lock().unwrap().take().unwrap().is_ok());
+        assert!(deleted.lock().unwrap().take().unwrap().is_ok());
+        assert_eq!(f.engine.calls(), ["start c1", "stop c1"]);
+        assert!(f.vm.calls().contains(&"delete dev --data".to_string()));
+        assert!(f.vm.calls().contains(&"prune_cache".to_string()));
+    }
 }

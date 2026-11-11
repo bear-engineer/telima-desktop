@@ -236,4 +236,12 @@ mod tests {
         block_on(svc.prune_volumes()).unwrap();
         assert_eq!(svc.engine().calls(), ["remove_volume old", "prune_volumes"]);
     }
+
+    #[test]
+    fn l6_start_and_stop_reach_the_engine() {
+        let svc = EngineService::new(FakeEngine::default());
+        block_on(svc.start_container("c1")).unwrap();
+        block_on(svc.stop_container("c1")).unwrap();
+        assert_eq!(svc.engine().calls(), ["start c1", "stop c1"]);
+    }
 }

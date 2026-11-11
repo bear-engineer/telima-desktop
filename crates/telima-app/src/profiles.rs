@@ -120,7 +120,8 @@ mod tests {
     use super::*;
     use crate::testing::FakeVm;
     use futures::executor::block_on;
-    use telima_core::profile::{MountType, ProfileStatus, Runtime, VmType};
+    use telima_core::profile::{DeleteOptions, MountType, ProfileStatus, Runtime, RuntimeInfo, VmType};
+    use telima_core::version::{ColimaVersion, MIN_SUPPORTED, VersionSupport};
     use telima_core::rules::RuleViolation;
 
     fn name(s: &str) -> ProfileName {
@@ -262,7 +263,65 @@ mod tests {
             Err(AppError::ConfirmationMismatch)
         );
         assert!(svc.vm().calls().is_empty());
-        block_on(svc.delete(&n, "dev")).unwrap();
+        block_on(svc.delete(&n, "dev", DeleteOptions::default())).unwrap();
         assert_eq!(svc.vm().calls(), ["delete dev"]);
+    }
+
+    #[test]
+    fn l6_delete_passes_the_data_option() {
+        let svc = service(FakeVm::default());
+        block_on(svc.delete(&name("dev"), "dev", DeleteOptions { data: true })).unwrap();
+        assert_eq!(svc.vm().calls(), ["delete dev --data"]);
+    }
+
+    #[test]
+    fn l6_runtime_info_comes_from_the_vm() {
+        let vm = FakeVm {
+            info: RuntimeInfo {
+                docker_server: Some("29.5.2".into()),
+                ..RuntimeInfo::default()
+            },
+            ..FakeVm::default()
+        };
+        let svc = service(vm);
+        let info = block_on(svc.runtime_info(&name("dev"))).unwrap();
+        assert_eq!(info.docker_server.as_deref(), Some("29.5.2"));
+        assert_eq!(svc.vm().calls(), ["runtime_info dev"]);
+    }
+
+    #[test]
+    fn l6_version_check_classifies_the_installed_colima() {
+        let check = |v| {
+            let vm = FakeVm {
+                version: Some(v),
+                ..FakeVm::default()
+            };
+            block_on(service(vm).colima_version_check()).unwrap()
+        };
+        assert_eq!(check(MIN_SUPPORTED).support, VersionSupport::Supported);
+        assert_eq!(
+            check(ColimaVersion::new(0, 1, 0)),
+            VersionCheck {
+                version: ColimaVersion::new(0, 1, 0),
+                support: VersionSupport::TooOld
+            }
+        );
+        assert_eq!(
+            check(ColimaVersion::new(9, 0, 0)).support,
+            VersionSupport::Untested
+        );
+    }
+
+    #[test]
+    fn l6_version_check_reports_missing_colima() {
+        let err = block_on(service(FakeVm::default()).colima_version_check()).unwrap_err();
+        assert!(matches!(err, AppError::Port(_)));
+    }
+
+    #[test]
+    fn l6_prune_cache_reaches_the_vm() {
+        let svc = service(FakeVm::default());
+        block_on(svc.prune_cache()).unwrap();
+        assert_eq!(svc.vm().calls(), ["prune_cache"]);
     }
 }

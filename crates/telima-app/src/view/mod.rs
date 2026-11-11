@@ -1,9 +1,11 @@
 //! View models: plain data the UI renders, built from use-case results. No GPUI types here.
 //! Korean labels follow the canvas (design/canvas-v1). Pure functions, synchronous tests.
 
+pub mod daily;
 pub mod docker_status;
 pub mod notice;
 pub mod start_steps;
+pub mod time_text;
 
 pub use notice::{Notice, NoticeKind, error_text, notice};
 pub use start_steps::{START_STEPS, StartProgress, StepState, start_progress, start_step_of};
@@ -653,6 +655,60 @@ mod tests {
         assert_eq!(rows[1].status_text, "종료됨 · 코드 0");
         assert_eq!(rows[2].status_text, "오류");
         assert_eq!(rows[0].state, ContainerState::Running);
+    }
+
+    #[test]
+    fn l6_container_rows_carry_ports_start_time_and_valid_actions() {
+        use telima_core::container::{PortBinding, PortProtocol};
+        use telima_core::time::UnixMillis;
+        let now = UnixMillis::from_secs(1_000_000);
+        let c = |state, started: Option<i64>| Container {
+            id: "3f2a9c1e".into(),
+            name: "web".into(),
+            image: "nginx".into(),
+            state,
+            status_text: String::new(),
+            ports: vec![PortBinding {
+                host_ip: Some("0.0.0.0".into()),
+                host_port: Some(8080),
+                container_port: 8080,
+                protocol: PortProtocol::Tcp,
+            }],
+            created_at: None,
+            started_at: started.map(|s| UnixMillis::from_secs(1_000_000 - s)),
+        };
+        let rows = container_rows(
+            &[
+                c(ContainerState::Running, Some(3 * 3600)),
+                c(ContainerState::Exited, Some(60)),
+                c(ContainerState::Created, None),
+            ],
+            now,
+        );
+        assert_eq!(rows[0].ports, "8080→8080/tcp");
+        assert_eq!(rows[0].started, "3시간 전");
+        assert!((rows[0].can_stop, rows[0].can_start) == (true, false));
+        assert_eq!(rows[1].started, "—");
+        assert!((rows[1].can_stop, rows[1].can_start) == (false, true));
+        assert_eq!(rows[2].started, "—");
+        assert!(rows[2].can_start);
+    }
+
+    #[test]
+    fn l6_delete_confirm_follows_the_data_option() {
+        use telima_core::profile::DeleteOptions;
+        let keep = confirm_delete_profile(&name("dev"), 2, &[Some(1)], DeleteOptions::default());
+        assert!(keep.body.contains("데이터 디스크는 남습니다"));
+        assert_eq!(keep.confirm_label, "프로필 삭제");
+        let wipe = confirm_delete_profile(
+            &name("dev"),
+            2,
+            &[Some(600_000_000), Some(600_000_000)],
+            DeleteOptions { data: true },
+        );
+        assert_eq!(wipe.confirm_label, "볼륨 2개, 1.2GB 삭제");
+        assert!(wipe.body.contains("컨테이너 2개"));
+        assert_eq!(wipe.typed_name.as_deref(), Some("dev"));
     }
 
     #[test]
