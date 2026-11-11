@@ -1,0 +1,26 @@
+name: colima-release
+on:
+  schedule:
+    - cron: "0 0 * * 1"   # weekly, Monday 00:00 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: colima-release
+  cancel-in-progress: false
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: unit tests for the watch script
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: check latest Colima release vs LAST_TESTED
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/colima_release.py
