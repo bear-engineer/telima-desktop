@@ -120,6 +120,20 @@ fn running_info() -> RuntimeInfo {
 }
 
 fn fixture_vm(cx: &mut TestAppContext, tweak: impl FnOnce(&mut FakeVm)) -> Fixture {
+    let (vm, spawner, asked, app) = parts(tweak);
+    let view = cx.new(|cx| MainView::new(app, cx));
+    Fixture {
+        vm,
+        spawner,
+        asked,
+        view,
+    }
+}
+
+type Parts = (Arc<FakeVm>, Arc<QueueSpawner>, Arc<Mutex<Vec<String>>>, App);
+
+/// Fake VM, engine and spawner wired into an app facade, without a view.
+fn parts(tweak: impl FnOnce(&mut FakeVm)) -> Parts {
     let mut vm = FakeVm {
         progress_lines: vec!["starting colima".into(), "done".into()],
         info: running_info(),
@@ -150,13 +164,7 @@ fn fixture_vm(cx: &mut TestAppContext, tweak: impl FnOnce(&mut FakeVm)) -> Fixtu
         },
         spawner.clone(),
     );
-    let view = cx.new(|cx| MainView::new(app, cx));
-    Fixture {
-        vm,
-        spawner,
-        asked,
-        view,
-    }
+    (vm, spawner, asked, app)
 }
 
 #[gpui_kit::test]
@@ -486,7 +494,8 @@ fn header_chip_and_inspector_show_the_uptime_of_a_running_profile(cx: &mut TestA
     assert!(
         ins.rows
             .iter()
-            .any(|(l, v)| *l == "가동 시간" && v == "가동 3시간 12분")
+            .any(|(l, v)| *l == "가동 시간" && v == "3시간 12분"),
+        "F6: the row label already says 가동"
     );
     // A stopped profile has no uptime.
     f.view.update(cx, |v, cx| v.select("work", cx));
@@ -605,4 +614,103 @@ fn inspector_lists_mounts_and_kubernetes_from_the_stored_spec(cx: &mut TestAppCo
     f.settle(cx);
     let ins = f.view.read_with(cx, |v, _| v.inspector()).unwrap();
     assert!(ins.mounts.is_empty());
+}
+
+// --- telima-l6 review fixes (F1 F2 F3 F10) ---
+
+#[gpui_kit::test]
+fn creating_a_profile_hands_off_to_the_start_progress(cx: &mut TestAppContext) {
+    // F1: no frozen "저장 중…" form; the new profile shows the shell's StartProgress.
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.new_profile(cx));
+    let editor = f.view.read_with(cx, |v, _| v.editor().cloned()).unwrap();
+    editor.update(cx, |e, cx| {
+        e.set_name("telima-test-a", cx);
+        e.submit(cx);
+    });
+    assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Profile);
+    assert!(f.view.read_with(cx, |v, _| v.editor().is_none()));
+    assert_eq!(
+        f.view
+            .read_with(cx, |v, _| v.selected().map(|n| n.to_string()))
+            .as_deref(),
+        Some("telima-test-a")
+    );
+    let row = f
+        .view
+        .read_with(cx, |v, _| v.rows())
+        .into_iter()
+        .find(|r| r.name == "telima-test-a")
+        .expect("the new profile is in the sidebar while it is created");
+    assert_eq!(row.kind, telima_app::view::StatusKind::Busy);
+    let progress = f
+        .view
+        .read_with(cx, |v, _| v.progress().cloned())
+        .expect("create shows the start progress");
+    assert_eq!(
+        progress.read_with(cx, |p, _| p.name().to_string()),
+        "telima-test-a"
+    );
+    f.spawner.run_all();
+    progress.update(cx, |p, cx| p.pump(cx));
+    assert_eq!(progress.read_with(cx, |p, _| p.lines()).len(), 2);
+    assert!(f.vm.calls().contains(&"create telima-test-a".to_string()));
+}
+
+#[gpui_kit::test]
+fn prune_confirm_takes_focus_and_escape_closes_it(cx: &mut TestAppContext) {
+    // F2: Escape closes 캐시 정리 like the delete dialog (N3).
+    let (vm, spawner, _, app) = parts(|_| {});
+    let (view, cx) = cx.add_window_view(|_, cx| MainView::new(app, cx));
+    spawner.run_all();
+    view.update(cx, |v, cx| v.pump(cx));
+    view.update(cx, |v, cx| v.prune(cx));
+    cx.run_until_parked();
+    assert!(
+        cx.update(|window, cx| view.read(cx).prune_has_focus(window)),
+        "the prune confirm must take focus when it opens"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.prune_confirm().is_none()));
+    assert!(!vm.calls().contains(&"prune_cache".to_owned()));
+}
+
+#[gpui_kit::test]
+fn stopping_hides_the_uptime_chip_and_the_header_chip_names_the_command(cx: &mut TestAppContext) {
+    // F3: one name/chip pair; no 가동 chip while the profile is stopping.
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("default", cx));
+    f.settle(cx);
+    assert!(f.view.read_with(cx, |v, _| v.uptime()).is_some());
+    f.view.update(cx, |v, cx| v.stop(cx));
+    assert_eq!(f.view.read_with(cx, |v, _| v.uptime()), None);
+    assert_eq!(
+        f.view
+            .read_with(cx, |v, cx| v.header_status_label(cx))
+            .as_deref(),
+        Some("중지 중")
+    );
+}
+
+#[gpui_kit::test]
+fn footer_keeps_the_last_known_docker_version_for_a_stopped_profile(cx: &mut TestAppContext) {
+    // F10: a stopped profile has no Docker server; keep the last version seen.
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("default", cx));
+    f.settle(cx);
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    f.settle(cx);
+    f.view.update(cx, |v, cx| {
+        v.inbox.lock().unwrap().push(Msg::Runtime(
+            ProfileName::parse("work").unwrap(),
+            Ok(RuntimeInfo {
+                docker_client: Some("28.0.1".into()),
+                ..RuntimeInfo::default()
+            }),
+        ));
+        v.pump(cx);
+    });
+    let footer = f.view.read_with(cx, |v, _| v.version_footer());
+    assert_eq!(footer.docker, "Docker 29.5.2");
 }

@@ -370,6 +370,27 @@ mod tests {
     }
 
     #[test]
+    fn delete_dialog_says_what_stays_or_goes_once() {
+        // F9: body, switch description and consequence line must not repeat each other.
+        let name = telima_core::profile::ProfileName::parse("dev").unwrap();
+        for data in [false, true] {
+            let options = DeleteOptions { data };
+            let body = crate::view::confirm_delete_profile(&name, 2, &[None], options).body;
+            let all = format!(
+                "{body} {} {}",
+                delete_data_option().description,
+                delete_consequence(options)
+            );
+            for phrase in ["데이터 디스크", "남습니다", "되돌릴 수 없습니다"] {
+                assert!(
+                    all.matches(phrase).count() <= 1,
+                    "{phrase:?} repeats: {all}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn delete_consequence_differs_by_option() {
         let keep = delete_consequence(DeleteOptions { data: false });
         let wipe = delete_consequence(DeleteOptions { data: true });

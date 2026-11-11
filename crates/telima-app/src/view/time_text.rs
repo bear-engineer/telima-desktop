@@ -95,6 +95,14 @@ mod tests {
     }
 
     #[test]
+    fn uptime_value_has_no_prefix_for_the_inspector_row() {
+        // F6: the 가동 시간 row must not read "가동 가동 …".
+        assert_eq!(uptime_value(mins(3 * 60 + 12)), "3시간 12분");
+        assert_eq!(uptime_value(Duration::from_secs(30)), "1분 미만");
+        assert_eq!(uptime_text(mins(3 * 60 + 12)), "가동 3시간 12분");
+    }
+
+    #[test]
     fn uptime_label_needs_a_start_time() {
         let now = UnixMillis::from_secs(10_000);
         let info = RuntimeInfo {

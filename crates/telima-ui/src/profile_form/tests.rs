@@ -526,3 +526,29 @@ fn profile_form_views_use_no_literal_colors_or_sizes() {
         }
     }
 }
+
+#[test]
+fn progress_view_has_no_second_name_or_chip_and_no_korean_literals() {
+    // F3: the shell header carries the name and the status chip.
+    // F4: progress copy comes from telima-app view functions.
+    let code: Vec<&str> = include_str!("progress.rs")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    assert!(
+        !code.iter().any(|l| l.contains("status_chip")),
+        "second chip"
+    );
+    assert!(
+        !code.iter().any(|l| l.contains("self.name.to_string()")),
+        "second name"
+    );
+    let hangul: Vec<&&str> = code
+        .iter()
+        .filter(|l| l.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)))
+        .collect();
+    assert!(
+        hangul.is_empty(),
+        "Korean literals in progress.rs: {hangul:?}"
+    );
+}

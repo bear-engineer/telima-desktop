@@ -4,6 +4,7 @@
 pub mod daily;
 pub mod docker_status;
 pub mod notice;
+pub mod progress;
 pub mod start_steps;
 pub mod time_text;
 
@@ -885,9 +886,10 @@ mod tests {
     }
 
     #[test]
-    fn delete_profile_confirm_with_no_volumes_omits_size() {
+    fn delete_profile_confirm_with_no_volumes_names_profile_and_data() {
+        // F5: no "볼륨 0개 삭제" on the destructive button.
         let c = confirm_delete_profile(&name("dev"), 0, &[], DeleteOptions { data: true });
-        assert_eq!(c.confirm_label, "볼륨 0개 삭제");
+        assert_eq!(c.confirm_label, "프로필과 데이터 삭제");
     }
 
     #[test]
