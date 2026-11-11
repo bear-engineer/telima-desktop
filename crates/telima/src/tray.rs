@@ -76,12 +76,18 @@ pub trait Shell {
 
 /// 살아 있는 첫 메인 창.
 pub fn live_window<S: Shell>(shell: &mut S) -> Option<S::Window> {
-    shell.windows().into_iter().next()
+    shell.windows().into_iter().find(|w| shell.alive(w))
 }
 
 /// 살아 있는 창을 앞으로 가져오거나, 없으면 하나 연다. 명령을 실행할 창을 돌려준다.
 pub fn show_window<S: Shell>(shell: &mut S) -> S::Window {
-    shell.open()
+    match live_window(shell) {
+        Some(window) => {
+            shell.activate(&window);
+            window
+        }
+        None => shell.open(),
+    }
 }
 
 pub fn apply<S: Shell>(cmd: &AppCommand, shell: &mut S) {
@@ -91,8 +97,12 @@ pub fn apply<S: Shell>(cmd: &AppCommand, shell: &mut S) {
             Step::ShowWindow => window = Some(show_window(shell)),
             Step::Track(name, lc) => shell.track(name, lc),
             Step::Run(cmd) => {
-                if let Some(w) = &window {
-                    let _ = shell.run(w, &cmd);
+                let result = match &window {
+                    Some(w) => shell.run(w, &cmd),
+                    None => Err("no main window".into()),
+                };
+                if let Err(err) = result {
+                    shell.log(&format!("{cmd:?} failed: {err}"));
                 }
             }
             Step::PollNow => shell.poll_now(),

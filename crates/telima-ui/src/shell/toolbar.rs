@@ -57,13 +57,23 @@ fn command_id(cmd: &AppCommand) -> &'static str {
 impl MainView {
     /// What runs on `name`, for the tray: the kind of a start/stop/restart sent from this
     /// window, `Other` for anything else (create, edit, delete), `None` when idle.
-    pub fn busy_op(&self, _name: &ProfileName, _cx: &App) -> Option<BusyOp> {
-        None
+    pub fn busy_op(&self, name: &ProfileName, cx: &App) -> Option<BusyOp> {
+        if !self.busy(name) {
+            return None;
+        }
+        let lifecycle = self
+            .progress
+            .get(name)
+            .filter(|_| self.pending.contains(name) && !self.placeholders.contains_key(name))
+            .map(|(p, _)| BusyOp::Lifecycle(p.read(cx).cmd()));
+        Some(lifecycle.unwrap_or(BusyOp::Other))
     }
 
     /// Selects `name` once the profile list arrives (a reopened window keeps the last
     /// profile). Falls back to the first profile when `name` is gone.
-    pub fn prefer(&mut self, _name: ProfileName) {}
+    pub fn prefer(&mut self, name: ProfileName) {
+        self.selected = Some(name);
+    }
 
     /// Toolbar buttons for the selected profile; no lifecycle buttons outside the profile
     /// screen, for a create placeholder Colima does not list, or while a command runs.
