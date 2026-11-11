@@ -1,6 +1,405 @@
 //! View models: plain data the UI renders, built from use-case results. No GPUI types here.
 //! Korean labels follow the canvas (design/canvas-v1). Pure functions, synchronous tests.
 
+use telima_core::container::{Container, ContainerState, Image, Volume};
+use telima_core::profile::{
+    MountType, Profile, ProfileName, ProfileSpec, ProfileStatus, Runtime, VmType,
+};
+
+const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+/// One decimal place, without a trailing `.0`: 8.0 -> "8", 3.14 -> "3.1".
+fn trim_decimal(v: f64) -> String {
+    let s = format!("{v:.1}");
+    s.strip_suffix(".0").unwrap_or(&s).to_owned()
+}
+
+/// Decimal (SI) size such as `docker system df` prints: 1_200_000_000 -> "1.2GB".
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes < 1_000 {
+        return format!("{bytes}B");
+    }
+    const UNITS: [&str; 5] = ["KB", "MB", "GB", "TB", "PB"];
+    // Start at KB: the first division already happened.
+    let mut value = bytes as f64 / 1_000.0;
+    let mut unit = 0;
+    while value >= 1_000.0 && unit < UNITS.len() - 1 {
+        value /= 1_000.0;
+        unit += 1;
+    }
+    format!("{}{}", trim_decimal(value), UNITS[unit])
+}
+
+/// Binary GiB for VM resources: 8 GiB -> "8 GiB".
+pub fn format_gib(bytes: u64) -> String {
+    format!("{} GiB", trim_decimal(bytes as f64 / GIB))
+}
+
+/// Sidebar and header status. Shape and colour are chosen by the UI from this kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusKind {
+    Running,
+    Stopped,
+    Busy,
+    Error,
+}
+
+impl StatusKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Running => "실행 중",
+            Self::Stopped => "중지",
+            Self::Busy => "처리 중",
+            Self::Error => "오류",
+        }
+    }
+}
+
+fn status_kind(profile: &Profile, busy: bool) -> StatusKind {
+    if busy {
+        return StatusKind::Busy;
+    }
+    match profile.status {
+        ProfileStatus::Running => StatusKind::Running,
+        ProfileStatus::Stopped => StatusKind::Stopped,
+        ProfileStatus::Other(_) => StatusKind::Error,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileRow {
+    pub name: String,
+    pub kind: StatusKind,
+    /// `8C · 8G`: cpus and memory in GiB.
+    pub resource_line: String,
+}
+
+pub fn profile_rows(
+    profiles: &[Profile],
+    is_busy: impl Fn(&ProfileName) -> bool,
+) -> Vec<ProfileRow> {
+    profiles
+        .iter()
+        .map(|p| ProfileRow {
+            name: p.name.as_str().to_owned(),
+            kind: status_kind(p, is_busy(&p.name)),
+            resource_line: format!(
+                "{}C · {}G",
+                p.cpus,
+                trim_decimal(p.memory_bytes as f64 / GIB)
+            ),
+        })
+        .collect()
+}
+
+/// Which profile buttons are enabled. All false while an operation runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileActions {
+    pub start: bool,
+    pub stop: bool,
+    pub restart: bool,
+    pub edit: bool,
+    pub delete: bool,
+}
+
+pub fn profile_actions(kind: StatusKind, busy: bool) -> ProfileActions {
+    if busy || kind == StatusKind::Busy {
+        return ProfileActions {
+            start: false,
+            stop: false,
+            restart: false,
+            edit: false,
+            delete: false,
+        };
+    }
+    // Error keeps every lifecycle action so the user can recover the VM.
+    let (start, stop, restart) = match kind {
+        StatusKind::Running => (false, true, true),
+        StatusKind::Stopped => (true, false, false),
+        StatusKind::Error => (true, true, true),
+        StatusKind::Busy => (false, false, false),
+    };
+    ProfileActions {
+        start,
+        stop,
+        restart,
+        edit: true,
+        delete: true,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileDetail {
+    pub name: String,
+    pub kind: StatusKind,
+    pub status_label: &'static str,
+    pub cpus: u32,
+    pub memory: String,
+    pub disk: String,
+    pub vm_type: String,
+    pub mount_type: String,
+    pub runtime: String,
+    pub arch: String,
+    /// IP address, or `—` when the VM has none.
+    pub address: String,
+    pub actions: ProfileActions,
+}
+
+fn vm_label(vm: VmType) -> &'static str {
+    match vm {
+        VmType::Vz => "vz",
+        VmType::Qemu => "qemu",
+        VmType::Krunkit => "krunkit",
+    }
+}
+
+fn mount_label(mount: MountType) -> &'static str {
+    match mount {
+        MountType::Virtiofs => "virtiofs",
+        MountType::Sshfs => "sshfs",
+        MountType::NineP => "9p",
+    }
+}
+
+fn runtime_label(runtime: Runtime) -> &'static str {
+    match runtime {
+        Runtime::Docker => "docker",
+        Runtime::Containerd => "containerd",
+        Runtime::Incus => "incus",
+    }
+}
+
+/// `config` supplies VM type and mount type, which `colima ls` does not report.
+/// Without it those fields show `—`.
+pub fn profile_detail(
+    profile: &Profile,
+    config: Option<&ProfileSpec>,
+    busy: bool,
+) -> ProfileDetail {
+    let kind = status_kind(profile, busy);
+    ProfileDetail {
+        name: profile.name.as_str().to_owned(),
+        kind,
+        status_label: kind.label(),
+        cpus: profile.cpus,
+        memory: format_gib(profile.memory_bytes),
+        disk: format_gib(profile.disk_bytes),
+        vm_type: config.map_or("—", |c| vm_label(c.vm_type)).to_owned(),
+        mount_type: config.map_or("—", |c| mount_label(c.mount_type)).to_owned(),
+        runtime: runtime_label(profile.runtime).to_owned(),
+        arch: profile.arch.clone(),
+        address: profile.address.clone().unwrap_or_else(|| "—".to_owned()),
+        actions: profile_actions(kind, busy),
+    }
+}
+
+pub fn container_state_label(state: ContainerState) -> &'static str {
+    match state {
+        ContainerState::Created => "생성됨",
+        ContainerState::Running => "실행 중",
+        ContainerState::Paused => "일시정지",
+        ContainerState::Restarting => "재시작 중",
+        ContainerState::Exited => "종료됨",
+        ContainerState::Dead => "오류",
+        ContainerState::Other => "알 수 없음",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerRow {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: ContainerState,
+    pub state_label: &'static str,
+    pub status_text: String,
+}
+
+pub fn container_rows(containers: &[Container]) -> Vec<ContainerRow> {
+    containers
+        .iter()
+        .map(|c| ContainerRow {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            image: c.image.clone(),
+            state: c.state,
+            state_label: container_state_label(c.state),
+            status_text: c.status_text.clone(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRow {
+    pub id: String,
+    /// Comma-separated tags, `<none>` when there are none.
+    pub tags: String,
+    pub size: String,
+    /// `2개`, or `—` when the engine did not report usage.
+    pub containers: String,
+    pub dangling: bool,
+}
+
+pub fn image_rows(images: &[Image]) -> Vec<ImageRow> {
+    images
+        .iter()
+        .map(|img| {
+            let tags: Vec<&str> = img
+                .tags
+                .iter()
+                .map(String::as_str)
+                .filter(|t| *t != "<none>:<none>")
+                .collect();
+            let dangling = img.is_dangling();
+            ImageRow {
+                id: img.id.clone(),
+                tags: if dangling {
+                    "<none>".to_owned()
+                } else {
+                    tags.join(", ")
+                },
+                size: format_bytes(img.size_bytes),
+                containers: img.containers.map_or("—".to_owned(), |n| format!("{n}개")),
+                dangling,
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeRow {
+    pub name: String,
+    pub size: String,
+    /// Unknown reference counts count as in use, as the domain rule says.
+    pub in_use: bool,
+    pub in_use_label: &'static str,
+}
+
+pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
+    volumes
+        .iter()
+        .map(|v| VolumeRow {
+            name: v.name.clone(),
+            size: v.size_bytes.map_or("—".to_owned(), format_bytes),
+            in_use: !v.is_unused(),
+            in_use_label: match v.ref_count {
+                Some(0) => "미사용",
+                Some(_) => "사용 중",
+                None => "확인 불가",
+            },
+        })
+        .collect()
+}
+
+/// Copy for a destructive confirmation dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirm {
+    pub title: String,
+    pub body: String,
+    pub confirm_label: String,
+    /// False when the action must not run at all (in-use volume, nothing to prune).
+    pub can_confirm: bool,
+    /// When set, the user must type this name before confirming.
+    pub typed_name: Option<String>,
+}
+
+fn simple_confirm(title: &str, body: String, label: String) -> Confirm {
+    Confirm {
+        title: title.to_owned(),
+        body,
+        confirm_label: label,
+        can_confirm: true,
+        typed_name: None,
+    }
+}
+
+fn refused_confirm(title: &str, body: String, label: &str) -> Confirm {
+    Confirm {
+        can_confirm: false,
+        confirm_label: label.to_owned(),
+        ..simple_confirm(title, body, String::new())
+    }
+}
+
+pub fn confirm_delete_profile(
+    name: &ProfileName,
+    containers: usize,
+    volumes: usize,
+    volume_bytes: u64,
+) -> Confirm {
+    Confirm {
+        typed_name: Some(name.as_str().to_owned()),
+        ..simple_confirm(
+            "프로필 삭제",
+            format!(
+                "VM 디스크, 컨테이너 {containers}개, 볼륨 {volumes}개가 함께 지워집니다. 되돌릴 수 없습니다."
+            ),
+            format!("볼륨 {volumes}개, {} 삭제", format_bytes(volume_bytes)),
+        )
+    }
+}
+
+pub fn confirm_remove_volume(name: &str, in_use: bool) -> Confirm {
+    if in_use {
+        return refused_confirm(
+            "볼륨 삭제",
+            format!(
+                "사용 중인 볼륨 '{name}'은 삭제할 수 없습니다. 이 볼륨을 쓰는 컨테이너를 먼저 지워 주세요."
+            ),
+            "볼륨 삭제",
+        );
+    }
+    simple_confirm(
+        "볼륨 삭제",
+        format!("볼륨 '{name}'의 데이터가 지워집니다. 되돌릴 수 없습니다."),
+        "볼륨 삭제".to_owned(),
+    )
+}
+
+pub fn confirm_prune_volumes(volumes: &[Volume]) -> Confirm {
+    if volumes.is_empty() {
+        return refused_confirm(
+            "미사용 볼륨 정리",
+            "정리할 미사용 볼륨이 없습니다.".to_owned(),
+            "볼륨 정리",
+        );
+    }
+    let bytes: u64 = volumes.iter().filter_map(|v| v.size_bytes).sum();
+    let n = volumes.len();
+    simple_confirm(
+        "미사용 볼륨 정리",
+        format!("미사용 볼륨 {n}개를 지웁니다. 되돌릴 수 없습니다."),
+        format!("볼륨 {n}개, {} 삭제", format_bytes(bytes)),
+    )
+}
+
+pub fn confirm_prune_images(images: &[Image]) -> Confirm {
+    if images.is_empty() {
+        return refused_confirm(
+            "미사용 이미지 정리",
+            "정리할 미사용 이미지가 없습니다.".to_owned(),
+            "이미지 정리",
+        );
+    }
+    let bytes: u64 = images.iter().map(|i| i.size_bytes).sum();
+    let n = images.len();
+    simple_confirm(
+        "미사용 이미지 정리",
+        format!("미사용 이미지 {n}개를 지웁니다. 되돌릴 수 없습니다."),
+        format!("이미지 {n}개, {} 삭제", format_bytes(bytes)),
+    )
+}
+
+pub fn confirm_remove_container(name: &str, state: ContainerState) -> Confirm {
+    let body = match state {
+        ContainerState::Running | ContainerState::Paused | ContainerState::Restarting => {
+            format!("실행 중인 컨테이너 '{name}'을 강제로 중지하고 삭제합니다. 되돌릴 수 없습니다.")
+        }
+        _ => format!("컨테이너 '{name}'을 삭제합니다. 되돌릴 수 없습니다."),
+    };
+    simple_confirm("컨테이너 삭제", body, "컨테이너 삭제".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use telima_core::container::{Container, ContainerState, Image, Volume};
@@ -192,7 +591,15 @@ mod tests {
         .collect();
         assert_eq!(
             labels,
-            vec!["생성됨", "실행 중", "일시정지", "재시작 중", "종료됨", "오류", "알 수 없음"]
+            vec![
+                "생성됨",
+                "실행 중",
+                "일시정지",
+                "재시작 중",
+                "종료됨",
+                "오류",
+                "알 수 없음"
+            ]
         );
     }
 
