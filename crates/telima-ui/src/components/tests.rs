@@ -147,8 +147,14 @@ impl Render for Harness {
             .child(icon_button("b4", div().child("+"), p))
             .child(skeleton_row(&[0.4, 0.2], p))
             .child(dialog_frame(metric::DIALOG_W, p).child("본문"))
-            .child(scrim(p))
-            .child(modal("m", metric::DIALOG_W_SM, p, div().child("확인")))
+            // The scrim occludes the page, so it covers only its own box here.
+            .child(
+                div()
+                    .relative()
+                    .h(px(metric::DIALOG_W_SM))
+                    .child(scrim(p))
+                    .child(modal("m", metric::DIALOG_W_SM, p, div().child("확인"))),
+            )
     }
 }
 

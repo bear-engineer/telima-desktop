@@ -154,7 +154,11 @@ impl MainView {
             pending: HashSet::new(),
             error: None,
             tab: Tab::Containers,
-            engine: cx.new(|cx| EnginePanel::new(app.clone(), cx)),
+            engine: cx.new(|cx| {
+                let mut panel = EnginePanel::new(app.clone(), cx);
+                panel.host_dialog();
+                panel
+            }),
             editor: None,
             progress: HashMap::new(),
             delete_confirm: None,
@@ -417,9 +421,19 @@ impl MainView {
 
     /// Opens the 캐시 정리 confirmation; nothing runs yet. It takes focus on the next render.
     pub fn prune(&mut self, cx: &mut Context<Self>) {
+        if self.dialog_open(cx) {
+            return;
+        }
         self.prune_confirm = Some(confirm_prune_cache());
         self.prune_focus_on_open = true;
         cx.notify();
+    }
+
+    /// Any dialog is open: delete, 캐시 정리 or the engine panel's confirm. One at a time.
+    fn dialog_open(&self, cx: &App) -> bool {
+        self.delete_confirm.is_some()
+            || self.prune_confirm.is_some()
+            || self.engine.read(cx).dialog().is_some()
     }
 
     /// True while keyboard focus is inside the 캐시 정리 confirmation.
@@ -629,7 +643,7 @@ impl MainView {
         let Some(name) = self.selected.clone() else {
             return;
         };
-        if self.busy(&name) || self.unlisted(&name) || self.delete_confirm.is_some() {
+        if self.busy(&name) || self.unlisted(&name) || self.dialog_open(cx) {
             return;
         }
         let inbox = self.inbox.clone();
@@ -1160,6 +1174,7 @@ impl MainView {
                 .id("prune-confirm")
                 .occlude()
                 .track_focus(&self.prune_focus)
+                .on_click(cx.listener(|v, _, window, cx| window.focus(&v.prune_focus, cx)))
                 .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
                     if ev.keystroke.key == "escape" {
                         v.cancel_prune(cx);
@@ -1406,6 +1421,11 @@ impl Render for MainView {
                     .child(div().id("delete-confirm").occlude().child(confirm)),
             )
         });
+        let own_dialog = self.delete_confirm.is_some() || self.prune_confirm.is_some();
+        let engine_dialog = self.engine.update(cx, |e, cx| {
+            e.set_blocked(own_dialog);
+            e.dialog_overlay(window, cx)
+        });
         let screen = self.screen();
         let main = v_flex()
             .flex_1()
@@ -1426,6 +1446,7 @@ impl Render for MainView {
             .text_color(hsla(p.text))
             .child(self.sidebar(p, cx))
             .child(main)
+            .children(engine_dialog)
             .children(overlay)
             .children(self.prune_dialog(p, cx))
     }

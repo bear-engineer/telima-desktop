@@ -21,6 +21,7 @@ pub mod segmented;
 pub mod skeleton;
 pub mod status;
 pub mod switch;
+pub mod tooltip;
 
 use gpui_kit::Hsla;
 

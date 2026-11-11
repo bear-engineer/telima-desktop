@@ -123,6 +123,14 @@ pub struct EnginePanel {
     log_search_focus: FocusHandle,
     /// Keyboard focus of the open ⋯ menu, so Escape closes it.
     menu_focus: FocusHandle,
+    /// Keyboard focus of the confirm dialog, so Escape closes it (F2 live).
+    pub(super) dialog_focus: FocusHandle,
+    /// Set when a dialog opens until the next render moves focus into it.
+    pub(super) dialog_focus_on_open: bool,
+    /// The host window draws the dialog over the whole window ([`Self::dialog_overlay`]).
+    hosted: bool,
+    /// The host shows its own dialog; no second one opens (one dialog at a time).
+    blocked: bool,
     log: Option<LogPanel>,
     log_job: Option<Job>,
     streams: u64,
@@ -133,11 +141,17 @@ pub struct EnginePanel {
 
 impl EnginePanel {
     /// Records the measured panel width; re-renders only when the table columns change.
+    /// Measured during prepaint, where a notify is dropped with the frame being drawn and the
+    /// window waited for the next input event; a changed column set re-renders right after.
     pub(super) fn set_width(&mut self, w: f32, cx: &mut Context<Self>) {
-        if model::container_columns(w) != model::container_columns(self.width) {
-            cx.notify();
-        }
+        let changed = model::container_columns(w) != model::container_columns(self.width);
         self.width = w;
+        if changed {
+            let this = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                this.update(cx, |_, cx| cx.notify()).ok();
+            });
+        }
     }
 
     pub fn new(app: Telima, cx: &mut Context<Self>) -> Self {
@@ -168,6 +182,10 @@ impl EnginePanel {
             log_focus: cx.focus_handle(),
             log_search_focus: cx.focus_handle(),
             menu_focus: cx.focus_handle(),
+            dialog_focus: cx.focus_handle(),
+            dialog_focus_on_open: false,
+            hosted: false,
+            blocked: false,
             log: None,
             log_job: None,
             streams: 0,
@@ -302,14 +320,14 @@ impl EnginePanel {
             Msg::Images(r) => self.images = list(r, image_rows),
             Msg::Volumes(r) => self.volumes = list(r, volume_rows),
             Msg::ImagePreview(Ok(list)) => {
-                self.dialog = Some(Dialog {
+                self.open_dialog(Dialog {
                     confirm: confirm_prune_images(&list),
                     items: list.into_iter().map(|i| i.id).collect(),
                     action: Action::PruneImages,
                 });
             }
             Msg::VolumePreview(Ok(list)) => {
-                self.dialog = Some(Dialog {
+                self.open_dialog(Dialog {
                     confirm: confirm_prune_volumes(&list),
                     items: list.into_iter().map(|v| v.name).collect(),
                     action: Action::PruneVolumes,
@@ -419,7 +437,7 @@ impl EnginePanel {
             .filter(|r| ids.contains(&r.id))
             .map(|r| r.name.clone())
             .collect();
-        self.dialog = Some(Dialog {
+        self.open_dialog(Dialog {
             confirm: copy::confirm_remove_exited(ids.len()),
             items,
             action: Action::RemoveContainers(ids),
@@ -478,7 +496,7 @@ impl EnginePanel {
             row.state,
             ContainerState::Running | ContainerState::Paused | ContainerState::Restarting
         );
-        self.dialog = Some(Dialog {
+        self.open_dialog(Dialog {
             confirm: confirm_remove_container(&row.name, row.state),
             items: vec![row.name.clone()],
             action: Action::RemoveContainer {
@@ -546,6 +564,29 @@ impl EnginePanel {
             }
         }
         cx.notify();
+    }
+
+    /// Opens `d` unless the host already shows a dialog; focus moves into it on render.
+    fn open_dialog(&mut self, d: Dialog) {
+        if self.blocked || self.dialog.is_some() {
+            return;
+        }
+        self.dialog = Some(d);
+        self.dialog_focus_on_open = true;
+    }
+
+    /// The host draws the confirm over the whole window via [`Self::dialog_overlay`].
+    pub fn host_dialog(&mut self) {
+        self.hosted = true;
+    }
+
+    /// Whether the host shows a dialog of its own; blocks opening this panel's confirm.
+    pub fn set_blocked(&mut self, blocked: bool) {
+        self.blocked = blocked;
+    }
+
+    pub(super) fn is_hosted(&self) -> bool {
+        self.hosted
     }
 
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {

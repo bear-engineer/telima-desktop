@@ -94,6 +94,7 @@ pub fn field_row(
                 .child(
                     div()
                         .w(px(metric::FIELD_LABEL))
+                        .flex_none()
                         .text_color(hsla(p.text_2))
                         .text_size(px(font::BODY.size))
                         .child(label),

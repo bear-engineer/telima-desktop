@@ -377,10 +377,7 @@ impl EnginePanel {
                                 .id(SharedString::from(format!("ctr-name-{}", r.id)))
                                 .debug_selector(move || format!("ctr-name-{name}"))
                                 .when(!show_id, |c| {
-                                    c.tooltip(move |window, cx| {
-                                        gpui_kit::component::tooltip::Tooltip::new(short.clone())
-                                            .build(window, cx)
-                                    })
+                                    c.tooltip(crate::components::tooltip::text_tip(short.clone()))
                                 })
                                 .child(r.name.clone())
                         }),
@@ -405,10 +402,7 @@ impl EnginePanel {
                     col(4)
                         .id(SharedString::from(format!("ctr-ports-{}", r.id)))
                         .when(full.contains(", "), |c| {
-                            c.tooltip(move |window, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new(full.clone())
-                                    .build(window, cx)
-                            })
+                            c.tooltip(crate::components::tooltip::text_tip(full.clone()))
                         })
                         .child(mono(port_cell(&r.ports), p.text_2))
                 })
@@ -812,6 +806,20 @@ impl EnginePanel {
             .into_any_element()
     }
 
+    /// The open confirm, focused when it opens so Escape closes it. The shell draws it over
+    /// the whole window; a standalone panel draws it over itself.
+    pub fn dialog_overlay(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let d = self.dialog.clone()?;
+        if std::mem::take(&mut self.dialog_focus_on_open) {
+            window.focus(&self.dialog_focus, cx);
+        }
+        Some(self.dialog_view(&d, palette(window), cx))
+    }
+
     fn dialog_view(&self, d: &Dialog, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let more = d.items.len().saturating_sub(DIALOG_ITEMS);
         let items = d
@@ -822,6 +830,13 @@ impl EnginePanel {
         let content = v_flex()
             .id("dialog")
             .occlude()
+            .track_focus(&self.dialog_focus)
+            .on_click(cx.listener(|v, _, window, cx| window.focus(&v.dialog_focus, cx)))
+            .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "escape" {
+                    v.dismiss(cx);
+                }
+            }))
             .gap(space(2))
             .child(
                 div()
@@ -928,7 +943,6 @@ impl Render for EnginePanel {
             Tab::Volumes => self.volumes_table(p, cx),
         };
         let log = self.log.clone();
-        let dialog = self.dialog.clone();
         let this = cx.entity();
         // Measures the panel each frame so the containers table can drop its ID column.
         let measure = canvas(
@@ -956,6 +970,8 @@ impl Render for EnginePanel {
                     .child(table),
             )
             .when_some(log, |d, log| d.child(self.log_panel(&log, window, p, cx)))
-            .when_some(dialog, |d, dlg| d.child(self.dialog_view(&dlg, p, cx)))
+            .when(!self.is_hosted(), |d| {
+                d.children(self.dialog_overlay(window, cx))
+            })
     }
 }

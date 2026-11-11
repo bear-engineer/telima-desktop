@@ -1,8 +1,8 @@
 //! Modal overlay: scrim (CSS --scrim, M14) and dialog frame, fading in over `motion::FAST`
 //! with ease-out (M13). Reduced motion renders the end state (GPUI `with_animation`).
 use gpui_kit::{
-    Animation, AnimationElement, AnimationExt, Div, ElementId, IntoElement, ParentElement, Styled,
-    div, px,
+    Animation, AnimationElement, AnimationExt, Div, ElementId, InteractiveElement, IntoElement,
+    ParentElement, Styled, div, px,
 };
 
 use super::hsla_alpha;
@@ -18,6 +18,8 @@ pub fn scrim(p: &Palette) -> Div {
         .items_center()
         .justify_center()
         .bg(hsla_alpha(p.scrim))
+        // Clicks and hovers behind an open dialog never reach the page (one dialog at a time).
+        .occlude()
 }
 
 /// Dialog surface of `width` px (`metric::DIALOG_W` or `metric::DIALOG_W_SM`).
