@@ -76,6 +76,9 @@ fn main() {
 
     let home = home_dir();
     let vm: Arc<dyn DynVm> = Arc::new(colima(home.as_ref()));
+    let version_env = std::env::var("TELIMA_COLIMA_VERSION").ok();
+    let vm =
+        dev_override::VersionOverride::wrap(vm, cfg!(debug_assertions), version_env.as_deref());
     let spawner: Arc<dyn Spawner> = Arc::new(TokioSpawner(handle.clone()));
     let engine_home = home.clone();
     let engine_handle = handle.clone();

@@ -18,14 +18,19 @@ pub fn appearance_of(os: WindowAppearance) -> Appearance {
 
 /// Parse `TELIMA_APPEARANCE` (`light` or `dark`, any case, surrounding spaces ignored).
 pub fn parse_appearance(raw: &str) -> Option<Appearance> {
-    let _ = raw;
-    None
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "light" => Some(Appearance::Light),
+        "dark" => Some(Appearance::Dark),
+        _ => None,
+    }
 }
 
 /// Appearance to use: the override only counts in debug builds (`debug`) and when it parses.
 pub fn resolve_appearance(debug: bool, raw: Option<&str>, os: Appearance) -> Appearance {
-    let _ = (debug, raw);
-    os
+    debug
+        .then(|| raw.and_then(parse_appearance))
+        .flatten()
+        .unwrap_or(os)
 }
 
 /// Palette that follows the window's OS appearance. Debug builds honour `TELIMA_APPEARANCE`.
