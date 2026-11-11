@@ -283,7 +283,7 @@ async fn spec_reads_colima_yaml() {
 }
 
 #[tokio::test]
-async fn update_edits_resources_mounts_and_kubernetes_only() {
+async fn update_edits_editable_fields_only() {
     let fake = Fake::with_alpha();
     let home = tmp_home("upd");
     let path = write_yaml(&home, "alpha", YAML);
@@ -298,6 +298,8 @@ async fn update_edits_resources_mounts_and_kubernetes_only() {
         .replace("cpu: 8", "cpu: 4")
         .replace("memory: 8", "memory: 6")
         .replace("disk: 100", "disk: 120")
+        .replace("  address: true", "  address: false")
+        .replace("rosetta: true", "rosetta: false")
         + "mounts: []\nkubernetes:\n  enabled: false\n"; // absent keys are appended
     assert_eq!(got, want);
     assert!(
@@ -494,4 +496,38 @@ async fn update_with_no_mounts_writes_empty_list() {
     cli(&fake, home).update(&s).await.unwrap();
     let got = std::fs::read_to_string(path).unwrap();
     assert!(got.contains("mounts: []\n\nvmType: vz\n"), "{got}");
+}
+
+#[tokio::test]
+async fn update_writes_mount_type_rosetta_and_network_address() {
+    let fake = Fake::with_alpha();
+    let home = tmp_home("updmrn");
+    let path = write_yaml(&home, "alpha", YAML);
+    let mut s = spec("alpha");
+    s.mount_type = MountType::Sshfs;
+    s.rosetta = false;
+    s.network_address = false;
+    cli(&fake, home.clone()).update(&s).await.unwrap();
+    let got = std::fs::read_to_string(&path).unwrap();
+    assert!(got.contains("mountType: sshfs\n"), "{got}");
+    assert!(got.contains("rosetta: false\n"), "{got}");
+    assert!(got.contains("network:\n  address: false\n  dns: []\n"), "{got}");
+    assert!(got.contains("vmType: vz\n"), "vmType is not editable: {got}");
+    let back = cli(&fake, home).spec(&name("alpha")).await.unwrap();
+    assert_eq!(back.mount_type, MountType::Sshfs);
+    assert!(!back.rosetta);
+    assert!(!back.network_address);
+}
+
+#[tokio::test]
+async fn update_adds_network_block_when_missing() {
+    let fake = Fake::with_alpha();
+    let home = tmp_home("updnet");
+    let path = write_yaml(&home, "alpha", "cpu: 2\nmemory: 2\ndisk: 10\n");
+    let mut s = spec("alpha");
+    s.network_address = true;
+    cli(&fake, home).update(&s).await.unwrap();
+    let got = std::fs::read_to_string(path).unwrap();
+    assert!(got.contains("network:\n  address: true\n"), "{got}");
+    assert!(got.contains("mountType: virtiofs\n"), "{got}");
 }
