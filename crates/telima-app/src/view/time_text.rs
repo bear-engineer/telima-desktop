@@ -1,5 +1,72 @@
 //! Time copy for uptime, container start and log lines.
 
+use std::time::Duration;
+
+use telima_core::profile::RuntimeInfo;
+use telima_core::time::UnixMillis;
+
+const MINUTE: u64 = 60;
+const HOUR: u64 = 60 * MINUTE;
+const DAY: u64 = 24 * HOUR;
+
+/// `가동 3시간 12분`. Two units at most; an empty second unit is left out.
+pub fn uptime_text(uptime: Duration) -> String {
+    let secs = uptime.as_secs();
+    if secs < MINUTE {
+        return "가동 1분 미만".to_owned();
+    }
+    let (days, hours, minutes) = (secs / DAY, secs % DAY / HOUR, secs % HOUR / MINUTE);
+    let text = if days > 0 {
+        pair(days, "일", hours, "시간")
+    } else if hours > 0 {
+        pair(hours, "시간", minutes, "분")
+    } else {
+        format!("{minutes}분")
+    };
+    format!("가동 {text}")
+}
+
+fn pair(major: u64, major_unit: &str, minor: u64, minor_unit: &str) -> String {
+    if minor == 0 {
+        format!("{major}{major_unit}")
+    } else {
+        format!("{major}{major_unit} {minor}{minor_unit}")
+    }
+}
+
+/// Uptime copy of a profile, `None` when the start time is unknown.
+pub fn uptime_label(info: &RuntimeInfo, now: UnixMillis) -> Option<String> {
+    info.uptime(now).map(uptime_text)
+}
+
+/// `5분 전`, `3시간 전`, `2일 전`. A start time in the future (clock skew) reads as just now.
+pub fn relative_time_text(then: UnixMillis, now: UnixMillis) -> String {
+    let secs = then.elapsed_until(now).as_secs();
+    if secs < MINUTE {
+        "방금 전".to_owned()
+    } else if secs < HOUR {
+        format!("{}분 전", secs / MINUTE)
+    } else if secs < DAY {
+        format!("{}시간 전", secs / HOUR)
+    } else {
+        format!("{}일 전", secs / DAY)
+    }
+}
+
+/// `14:03:22` in the viewer's UTC offset (seconds). Empty when the line has no timestamp.
+pub fn log_time_text(timestamp: Option<UnixMillis>, utc_offset_secs: i32) -> String {
+    let Some(ts) = timestamp else {
+        return String::new();
+    };
+    let day_secs = (ts.as_secs() + i64::from(utc_offset_secs)).rem_euclid(DAY as i64);
+    format!(
+        "{:02}:{:02}:{:02}",
+        day_secs / HOUR as i64,
+        day_secs % HOUR as i64 / MINUTE as i64,
+        day_secs % MINUTE as i64
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

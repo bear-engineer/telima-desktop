@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use telima_core::ports::{ProgressSink, VmManager};
-use telima_core::profile::{HostOs, Profile, ProfileName, ProfileSpec};
+use telima_core::profile::{DeleteOptions, HostOs, Profile, ProfileName, ProfileSpec, RuntimeInfo};
 use telima_core::rules;
+use telima_core::version::{ColimaVersion, VersionSupport, version_support};
 
 use crate::AppError;
 
@@ -13,6 +14,13 @@ pub struct ProfileService<V> {
     vm: V,
     os: HostOs,
     busy: Mutex<HashSet<ProfileName>>,
+}
+
+/// Installed Colima version and how the app's tested range sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VersionCheck {
+    pub version: ColimaVersion,
+    pub support: VersionSupport,
 }
 
 /// Which lifecycle command to run.
@@ -78,12 +86,36 @@ impl<V: VmManager> ProfileService<V> {
     }
 
     /// Delete only when `typed` equals the profile name.
-    pub async fn delete(&self, name: &ProfileName, typed: &str) -> Result<(), AppError> {
+    /// `options.data` also deletes the data disk.
+    pub async fn delete(
+        &self,
+        name: &ProfileName,
+        typed: &str,
+        options: DeleteOptions,
+    ) -> Result<(), AppError> {
         if typed != name.as_str() {
             return Err(AppError::ConfirmationMismatch);
         }
         let _guard = self.claim(name)?;
-        Ok(self.vm.delete(name).await?)
+        Ok(self.vm.delete(name, options).await?)
+    }
+
+    /// Start time and versions of a profile.
+    pub async fn runtime_info(&self, name: &ProfileName) -> Result<RuntimeInfo, AppError> {
+        Ok(self.vm.runtime_info(name).await?)
+    }
+
+    pub async fn colima_version_check(&self) -> Result<VersionCheck, AppError> {
+        let version = self.vm.colima_version().await?;
+        Ok(VersionCheck {
+            version,
+            support: version_support(version),
+        })
+    }
+
+    /// Remove cached downloads. Not tied to one profile, so it takes no busy claim.
+    pub async fn prune_cache(&self) -> Result<(), AppError> {
+        Ok(self.vm.prune_cache().await?)
     }
 
     /// Mark `name` busy until the returned guard drops.
@@ -120,9 +152,11 @@ mod tests {
     use super::*;
     use crate::testing::FakeVm;
     use futures::executor::block_on;
-    use telima_core::profile::{DeleteOptions, MountType, ProfileStatus, Runtime, RuntimeInfo, VmType};
-    use telima_core::version::{ColimaVersion, MIN_SUPPORTED, VersionSupport};
+    use telima_core::profile::{
+        DeleteOptions, MountType, ProfileStatus, Runtime, RuntimeInfo, VmType,
+    };
     use telima_core::rules::RuleViolation;
+    use telima_core::version::{ColimaVersion, MIN_SUPPORTED, VersionSupport};
 
     fn name(s: &str) -> ProfileName {
         ProfileName::parse(s).unwrap()
@@ -152,6 +186,8 @@ mod tests {
             runtime: Runtime::Docker,
             rosetta: true,
             network_address: false,
+            mounts: Vec::new(),
+            kubernetes: false,
         }
     }
 
@@ -259,7 +295,7 @@ mod tests {
         let svc = service(FakeVm::default());
         let n = name("dev");
         assert_eq!(
-            block_on(svc.delete(&n, "de")),
+            block_on(svc.delete(&n, "de", DeleteOptions::default())),
             Err(AppError::ConfirmationMismatch)
         );
         assert!(svc.vm().calls().is_empty());

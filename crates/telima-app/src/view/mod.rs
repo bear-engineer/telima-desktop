@@ -12,8 +12,9 @@ pub use start_steps::{START_STEPS, StartProgress, StepState, start_progress, sta
 
 use telima_core::container::{Container, ContainerState, Image, Volume};
 use telima_core::profile::{
-    MountType, Profile, ProfileName, ProfileSpec, ProfileStatus, Runtime, VmType,
+    DeleteOptions, MountType, Profile, ProfileName, ProfileSpec, ProfileStatus, Runtime, VmType,
 };
+use telima_core::time::UnixMillis;
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
@@ -222,9 +223,15 @@ pub struct ContainerRow {
     pub state: ContainerState,
     pub state_label: &'static str,
     pub status_text: String,
+    /// `8080→8080/tcp, 443→8443/tcp`, `—` when none.
+    pub ports: String,
+    /// `3시간 전` for a running container, `—` otherwise.
+    pub started: String,
+    pub can_start: bool,
+    pub can_stop: bool,
 }
 
-pub fn container_rows(containers: &[Container]) -> Vec<ContainerRow> {
+pub fn container_rows(containers: &[Container], now: UnixMillis) -> Vec<ContainerRow> {
     containers
         .iter()
         .map(|c| ContainerRow {
@@ -234,6 +241,13 @@ pub fn container_rows(containers: &[Container]) -> Vec<ContainerRow> {
             state: c.state,
             state_label: container_state_label(c.state),
             status_text: docker_status::container_status_text(&c.status_text, c.state),
+            ports: daily::ports_text(&c.ports),
+            started: match (c.state, c.started_at) {
+                (ContainerState::Running, Some(at)) => time_text::relative_time_text(at, now),
+                _ => "—".to_owned(),
+            },
+            can_start: c.state.can_start(),
+            can_stop: c.state.can_stop(),
         })
         .collect()
 }
@@ -406,17 +420,28 @@ pub fn confirm_delete_profile(
     name: &ProfileName,
     containers: usize,
     volume_sizes: &[Option<u64>],
+    options: DeleteOptions,
 ) -> Confirm {
-    Confirm {
-        typed_name: Some(name.as_str().to_owned()),
-        ..simple_confirm(
-            "프로필 삭제",
+    let (body, label) = if options.data {
+        (
             format!(
                 "VM 디스크, 컨테이너 {containers}개, 볼륨 {}개가 함께 지워집니다. 되돌릴 수 없습니다.",
                 volume_sizes.len()
             ),
             volume_delete_label(volume_sizes.iter().copied()),
         )
+    } else {
+        (
+            format!(
+                "VM과 컨테이너 {containers}개가 지워집니다. 볼륨 {}개와 이미지가 든 데이터 디스크는 남습니다.",
+                volume_sizes.len()
+            ),
+            "프로필 삭제".to_owned(),
+        )
+    };
+    Confirm {
+        typed_name: Some(name.as_str().to_owned()),
+        ..simple_confirm("프로필 삭제", body, label)
     }
 }
 
@@ -519,6 +544,8 @@ mod tests {
             runtime: Runtime::Docker,
             rosetta: false,
             network_address: true,
+            mounts: Vec::new(),
+            kubernetes: false,
         }
     }
 
@@ -640,12 +667,18 @@ mod tests {
             image: "postgres:17".into(),
             state,
             status_text: text.into(),
+            ports: Vec::new(),
+            created_at: None,
+            started_at: None,
         };
-        let rows = container_rows(&[
-            c(ContainerState::Running, "Up 3 hours"),
-            c(ContainerState::Exited, "Exited (0) 4 hours ago"),
-            c(ContainerState::Dead, "Dead"),
-        ]);
+        let rows = container_rows(
+            &[
+                c(ContainerState::Running, "Up 3 hours"),
+                c(ContainerState::Exited, "Exited (0) 4 hours ago"),
+                c(ContainerState::Dead, "Dead"),
+            ],
+            UnixMillis::from_secs(0),
+        );
         assert_eq!(rows[0].state_label, "실행 중");
         assert_eq!(rows[1].state_label, "종료됨");
         assert_eq!(rows[2].state_label, "오류");
@@ -821,6 +854,7 @@ mod tests {
             &name("dev"),
             6,
             &[Some(600_000_000), Some(600_000_000), Some(0)],
+            DeleteOptions { data: true },
         );
         assert_eq!(c.title, "프로필 삭제");
         assert_eq!(
@@ -835,7 +869,7 @@ mod tests {
     #[test]
     fn delete_profile_confirm_omits_size_when_every_volume_size_is_unknown() {
         // N8: unknown sizes must not be summed as 0B.
-        let c = confirm_delete_profile(&name("dev"), 0, &[None; 13]);
+        let c = confirm_delete_profile(&name("dev"), 0, &[None; 13], DeleteOptions { data: true });
         assert_eq!(c.confirm_label, "볼륨 13개 삭제");
     }
 
@@ -845,13 +879,14 @@ mod tests {
             &name("dev"),
             0,
             &[Some(600_000_000), None, Some(600_000_000), None],
+            DeleteOptions { data: true },
         );
         assert_eq!(c.confirm_label, "볼륨 4개, 1.2GB 이상 삭제");
     }
 
     #[test]
     fn delete_profile_confirm_with_no_volumes_omits_size() {
-        let c = confirm_delete_profile(&name("dev"), 0, &[]);
+        let c = confirm_delete_profile(&name("dev"), 0, &[], DeleteOptions { data: true });
         assert_eq!(c.confirm_label, "볼륨 0개 삭제");
     }
 

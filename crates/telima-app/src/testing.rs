@@ -5,7 +5,10 @@ use telima_core::container::{
     Container, DiskUsage, Image, LogLine, LogStream, PruneReport, Volume,
 };
 use telima_core::ports::{ContainerEngine, PortResult, ProgressSink, VmManager};
-use telima_core::profile::{Profile, ProfileName, ProfileSpec, ProgressEvent, ProgressLevel};
+use telima_core::profile::{
+    DeleteOptions, Profile, ProfileName, ProfileSpec, ProgressEvent, ProgressLevel, RuntimeInfo,
+};
+use telima_core::version::ColimaVersion;
 
 #[derive(Default)]
 pub struct FakeVm {
@@ -14,6 +17,10 @@ pub struct FakeVm {
     pub calls: Mutex<Vec<String>>,
     /// Lines emitted to the progress sink by start/stop/restart/create.
     pub progress_lines: Vec<String>,
+    /// Answer of `runtime_info`.
+    pub info: RuntimeInfo,
+    /// Answer of `colima_version`; `None` behaves like a missing Colima.
+    pub version: Option<ColimaVersion>,
 }
 
 impl FakeVm {
@@ -72,8 +79,23 @@ impl VmManager for FakeVm {
         self.record(format!("update {}", spec.name));
         Ok(())
     }
-    async fn delete(&self, name: &ProfileName) -> PortResult<()> {
-        self.record(format!("delete {name}"));
+    async fn delete(&self, name: &ProfileName, options: DeleteOptions) -> PortResult<()> {
+        let data = if options.data { " --data" } else { "" };
+        self.record(format!("delete {name}{data}"));
+        Ok(())
+    }
+    async fn colima_version(&self) -> PortResult<ColimaVersion> {
+        self.record("colima_version".into());
+        self.version.ok_or_else(|| {
+            telima_core::ports::PortError::Unavailable("colima is not installed".into())
+        })
+    }
+    async fn runtime_info(&self, name: &ProfileName) -> PortResult<RuntimeInfo> {
+        self.record(format!("runtime_info {name}"));
+        Ok(self.info.clone())
+    }
+    async fn prune_cache(&self) -> PortResult<()> {
+        self.record("prune_cache".into());
         Ok(())
     }
 }
@@ -104,6 +126,14 @@ impl ContainerEngine for FakeEngine {
         self.record(format!("restart {id}"));
         Ok(())
     }
+    async fn start_container(&self, id: &str) -> PortResult<()> {
+        self.record(format!("start {id}"));
+        Ok(())
+    }
+    async fn stop_container(&self, id: &str) -> PortResult<()> {
+        self.record(format!("stop {id}"));
+        Ok(())
+    }
     async fn remove_container(&self, id: &str, force: bool) -> PortResult<()> {
         self.record(format!("remove {id} force={force}"));
         Ok(())
@@ -119,6 +149,7 @@ impl ContainerEngine for FakeEngine {
             sink(LogLine {
                 stream: LogStream::Stdout,
                 text: l.clone(),
+                timestamp: None,
             });
         }
         Ok(())

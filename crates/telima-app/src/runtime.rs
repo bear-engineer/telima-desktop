@@ -9,11 +9,14 @@ use std::sync::Arc;
 use futures::future::{AbortHandle, abortable};
 use telima_core::container::{Container, DiskUsage, Image, LogLine, PruneReport, Volume};
 use telima_core::ports::{ContainerEngine, PortResult, ProgressSink, VmManager};
-use telima_core::profile::{HostOs, Profile, ProfileName, ProfileSpec, ProgressEvent};
+use telima_core::profile::{
+    DeleteOptions, HostOs, Profile, ProfileName, ProfileSpec, ProgressEvent, RuntimeInfo,
+};
+use telima_core::version::ColimaVersion;
 
 use crate::AppError;
 use crate::engine::EngineService;
-use crate::profiles::{Lifecycle, ProfileService};
+use crate::profiles::{Lifecycle, ProfileService, VersionCheck};
 
 /// An owned, `Send` future behind a pointer.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -51,7 +54,14 @@ pub trait DynVm: Send + Sync {
         progress: ProgressSink<'a>,
     ) -> BoxFuture<'a, PortResult<()>>;
     fn update<'a>(&'a self, spec: &'a ProfileSpec) -> BoxFuture<'a, PortResult<()>>;
-    fn delete<'a>(&'a self, name: &'a ProfileName) -> BoxFuture<'a, PortResult<()>>;
+    fn delete<'a>(
+        &'a self,
+        name: &'a ProfileName,
+        options: DeleteOptions,
+    ) -> BoxFuture<'a, PortResult<()>>;
+    fn colima_version(&self) -> BoxFuture<'_, PortResult<ColimaVersion>>;
+    fn runtime_info<'a>(&'a self, name: &'a ProfileName) -> BoxFuture<'a, PortResult<RuntimeInfo>>;
+    fn prune_cache(&self) -> BoxFuture<'_, PortResult<()>>;
 }
 
 impl<T: VmManager> DynVm for T {
@@ -92,14 +102,29 @@ impl<T: VmManager> DynVm for T {
     fn update<'a>(&'a self, spec: &'a ProfileSpec) -> BoxFuture<'a, PortResult<()>> {
         Box::pin(VmManager::update(self, spec))
     }
-    fn delete<'a>(&'a self, name: &'a ProfileName) -> BoxFuture<'a, PortResult<()>> {
-        Box::pin(VmManager::delete(self, name))
+    fn delete<'a>(
+        &'a self,
+        name: &'a ProfileName,
+        options: DeleteOptions,
+    ) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(VmManager::delete(self, name, options))
+    }
+    fn colima_version(&self) -> BoxFuture<'_, PortResult<ColimaVersion>> {
+        Box::pin(VmManager::colima_version(self))
+    }
+    fn runtime_info<'a>(&'a self, name: &'a ProfileName) -> BoxFuture<'a, PortResult<RuntimeInfo>> {
+        Box::pin(VmManager::runtime_info(self, name))
+    }
+    fn prune_cache(&self) -> BoxFuture<'_, PortResult<()>> {
+        Box::pin(VmManager::prune_cache(self))
     }
 }
 
 /// Object-safe form of [`ContainerEngine`]. Every `ContainerEngine` is one.
 pub trait DynEngine: Send + Sync {
     fn containers(&self) -> BoxFuture<'_, PortResult<Vec<Container>>>;
+    fn start_container<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>>;
+    fn stop_container<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>>;
     fn restart_container<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>>;
     fn remove_container<'a>(&'a self, id: &'a str, force: bool) -> BoxFuture<'a, PortResult<()>>;
     fn logs<'a>(
@@ -120,6 +145,12 @@ pub trait DynEngine: Send + Sync {
 impl<T: ContainerEngine> DynEngine for T {
     fn containers(&self) -> BoxFuture<'_, PortResult<Vec<Container>>> {
         Box::pin(ContainerEngine::containers(self))
+    }
+    fn start_container<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(ContainerEngine::start_container(self, id))
+    }
+    fn stop_container<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(ContainerEngine::stop_container(self, id))
     }
     fn restart_container<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>> {
         Box::pin(ContainerEngine::restart_container(self, id))
@@ -183,8 +214,17 @@ impl VmManager for SharedVm {
     async fn update(&self, spec: &ProfileSpec) -> PortResult<()> {
         self.0.update(spec).await
     }
-    async fn delete(&self, name: &ProfileName) -> PortResult<()> {
-        self.0.delete(name).await
+    async fn delete(&self, name: &ProfileName, options: DeleteOptions) -> PortResult<()> {
+        self.0.delete(name, options).await
+    }
+    async fn colima_version(&self) -> PortResult<ColimaVersion> {
+        self.0.colima_version().await
+    }
+    async fn runtime_info(&self, name: &ProfileName) -> PortResult<RuntimeInfo> {
+        self.0.runtime_info(name).await
+    }
+    async fn prune_cache(&self) -> PortResult<()> {
+        self.0.prune_cache().await
     }
 }
 
@@ -194,6 +234,12 @@ struct SharedEngine(Arc<dyn DynEngine>);
 impl ContainerEngine for SharedEngine {
     async fn containers(&self) -> PortResult<Vec<Container>> {
         self.0.containers().await
+    }
+    async fn start_container(&self, id: &str) -> PortResult<()> {
+        self.0.start_container(id).await
+    }
+    async fn stop_container(&self, id: &str) -> PortResult<()> {
+        self.0.stop_container(id).await
     }
     async fn restart_container(&self, id: &str) -> PortResult<()> {
         self.0.restart_container(id).await
@@ -362,15 +408,69 @@ impl App {
         self.run(|app| async move { app.profiles.update(&next).await }, done)
     }
 
-    /// Deletes only when `typed` equals the profile name.
+    /// Deletes only when `typed` equals the profile name. `options.data` also deletes the
+    /// data disk.
     pub fn delete_profile(
         &self,
         name: ProfileName,
         typed: String,
+        options: DeleteOptions,
         done: impl FnOnce(Result<(), AppError>) + Send + 'static,
     ) -> Task {
         self.run(
-            |app| async move { app.profiles.delete(&name, &typed).await },
+            move |app| async move { app.profiles.delete(&name, &typed, options).await },
+            done,
+        )
+    }
+
+    /// Start time and versions of `name` (the `colima status` facts; unknown fields are `None`).
+    pub fn runtime_info(
+        &self,
+        name: ProfileName,
+        done: impl FnOnce(Result<RuntimeInfo, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            move |app| async move { app.profiles.runtime_info(&name).await },
+            done,
+        )
+    }
+
+    /// Installed Colima version and whether it is in the tested range (run at startup).
+    pub fn check_colima_version(
+        &self,
+        done: impl FnOnce(Result<VersionCheck, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.profiles.colima_version_check().await },
+            done,
+        )
+    }
+
+    /// `colima prune`: removes cached downloads. Profiles and containers are untouched.
+    pub fn prune_cache(&self, done: impl FnOnce(Result<(), AppError>) + Send + 'static) -> Task {
+        self.run(|app| async move { app.profiles.prune_cache().await }, done)
+    }
+
+    pub fn start_container(
+        &self,
+        profile: ProfileName,
+        id: String,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            move |app| async move { app.engine(&profile)?.start_container(&id).await },
+            done,
+        )
+    }
+
+    pub fn stop_container(
+        &self,
+        profile: ProfileName,
+        id: String,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            move |app| async move { app.engine(&profile)?.stop_container(&id).await },
             done,
         )
     }
@@ -630,6 +730,8 @@ mod tests {
             runtime: Runtime::Docker,
             rosetta: true,
             network_address: false,
+            mounts: Vec::new(),
+            kubernetes: false,
         }
     }
 
@@ -640,6 +742,9 @@ mod tests {
             image: "alpine:3".into(),
             state,
             status_text: String::new(),
+            ports: Vec::new(),
+            created_at: None,
+            started_at: None,
         }
     }
 
@@ -722,9 +827,11 @@ mod tests {
             done,
         );
         let (refused, done) = slot();
-        f.app.delete_profile(name("dev"), "de".into(), done);
+        f.app
+            .delete_profile(name("dev"), "de".into(), Default::default(), done);
         let (deleted, done) = slot();
-        f.app.delete_profile(name("dev"), "dev".into(), done);
+        f.app
+            .delete_profile(name("dev"), "dev".into(), Default::default(), done);
         f.spawner.run_all();
         assert_eq!(updated.lock().unwrap().take(), Some(Ok(())));
         assert_eq!(
@@ -911,8 +1018,12 @@ mod tests {
         let (pruned, done) = slot();
         f.app.prune_cache(done);
         let (deleted, done) = slot();
-        f.app
-            .delete_profile(name("dev"), "dev".into(), DeleteOptions { data: true }, done);
+        f.app.delete_profile(
+            name("dev"),
+            "dev".into(),
+            DeleteOptions { data: true },
+            done,
+        );
         f.spawner.run_all();
 
         let info = info.lock().unwrap().take().unwrap().unwrap();

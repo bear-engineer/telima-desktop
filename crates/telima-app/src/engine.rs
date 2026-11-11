@@ -27,6 +27,14 @@ impl<E: ContainerEngine> EngineService<E> {
         Ok(list)
     }
 
+    pub async fn start_container(&self, id: &str) -> Result<(), AppError> {
+        Ok(self.engine.start_container(id).await?)
+    }
+
+    pub async fn stop_container(&self, id: &str) -> Result<(), AppError> {
+        Ok(self.engine.stop_container(id).await?)
+    }
+
     pub async fn restart_container(&self, id: &str) -> Result<(), AppError> {
         Ok(self.engine.restart_container(id).await?)
     }
@@ -119,6 +127,9 @@ mod tests {
             image: "alpine:3".into(),
             state,
             status_text: String::new(),
+            ports: Vec::new(),
+            created_at: None,
+            started_at: None,
         }
     }
 
