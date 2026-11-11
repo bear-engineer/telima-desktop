@@ -5,8 +5,8 @@ pub mod docker_status;
 pub mod notice;
 pub mod start_steps;
 
-pub use notice::{error_text, notice, Notice, NoticeKind};
-pub use start_steps::{start_progress, start_step_of, StartProgress, StepState, START_STEPS};
+pub use notice::{Notice, NoticeKind, error_text, notice};
+pub use start_steps::{START_STEPS, StartProgress, StepState, start_progress, start_step_of};
 
 use telima_core::container::{Container, ContainerState, Image, Volume};
 use telima_core::profile::{
@@ -231,7 +231,7 @@ pub fn container_rows(containers: &[Container]) -> Vec<ContainerRow> {
             image: c.image.clone(),
             state: c.state,
             state_label: container_state_label(c.state),
-            status_text: c.status_text.clone(),
+            status_text: docker_status::container_status_text(&c.status_text, c.state),
         })
         .collect()
 }
@@ -251,7 +251,11 @@ pub struct ImageRow {
 
 /// `sha256:4611d0a1b2c3...` -> `4611d0a1b2c3`. Ids without the prefix keep their hex.
 pub fn short_image_id(id: &str) -> String {
-    id.chars().take(12).collect()
+    id.strip_prefix("sha256:")
+        .unwrap_or(id)
+        .chars()
+        .take(12)
+        .collect()
 }
 
 pub fn image_rows(images: &[Image]) -> Vec<ImageRow> {
@@ -310,13 +314,27 @@ pub struct VolumeRow {
 pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
     volumes
         .iter()
-        .map(|v| VolumeRow {
-            name: v.name.clone(),
-            size: v.size_bytes.map_or("—".to_owned(), format_bytes),
-            usage: VolumeUsage::InUse,
-            chip: ChipKind::Ok,
-            in_use: true,
-            in_use_label: "사용 중",
+        .map(|v| {
+            let usage = match v.ref_count {
+                Some(0) => VolumeUsage::Unused,
+                Some(_) => VolumeUsage::InUse,
+                None => VolumeUsage::Unknown,
+            };
+            VolumeRow {
+                name: v.name.clone(),
+                size: v.size_bytes.map_or("—".to_owned(), format_bytes),
+                usage,
+                chip: match usage {
+                    VolumeUsage::InUse => ChipKind::Ok,
+                    VolumeUsage::Unused | VolumeUsage::Unknown => ChipKind::Idle,
+                },
+                in_use: usage == VolumeUsage::InUse,
+                in_use_label: match usage {
+                    VolumeUsage::InUse => "사용 중",
+                    VolumeUsage::Unused => "미사용",
+                    VolumeUsage::Unknown => "확인 불가",
+                },
+            }
         })
         .collect()
 }

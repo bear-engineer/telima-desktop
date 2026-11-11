@@ -25,8 +25,57 @@ pub struct Notice {
 
 /// Classify an error and attach the Korean copy for it.
 pub fn notice(err: &AppError) -> Notice {
-    let _ = err;
-    unimplemented!("RED: notice")
+    let (kind, message, hint) = match err {
+        AppError::Port(PortError::Unavailable(detail)) if detail.contains("not installed") => (
+            NoticeKind::NotInstalled,
+            "Colima가 설치되어 있지 않습니다.",
+            Some("brew install colima"),
+        ),
+        AppError::Port(PortError::Unavailable(_)) => (
+            NoticeKind::EngineUnavailable,
+            "Colima VM 또는 Docker 엔진에 연결할 수 없습니다. 프로필이 실행 중인지 확인해 주세요.",
+            None,
+        ),
+        AppError::Port(PortError::NotFound(_)) => (
+            NoticeKind::NotFound,
+            "요청한 항목을 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도해 주세요.",
+            None,
+        ),
+        AppError::Port(PortError::Failed(_)) => (
+            NoticeKind::Failed,
+            "작업을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+            None,
+        ),
+        AppError::Busy(_) => (
+            NoticeKind::Busy,
+            "다른 작업이 진행 중입니다. 끝난 뒤 다시 시도해 주세요.",
+            None,
+        ),
+        AppError::InUse(_) => (
+            NoticeKind::Busy,
+            "사용 중이라 지금은 처리할 수 없습니다.",
+            None,
+        ),
+        AppError::Invalid(violations) => (
+            NoticeKind::Invalid,
+            if violations.len() == 1 {
+                "설정 값 1개가 규칙에 맞지 않습니다."
+            } else {
+                "설정 값이 규칙에 맞지 않습니다."
+            },
+            None,
+        ),
+        AppError::ConfirmationMismatch => (
+            NoticeKind::Invalid,
+            "입력한 이름이 프로필 이름과 다릅니다.",
+            None,
+        ),
+    };
+    Notice {
+        kind,
+        message: message.to_owned(),
+        hint,
+    }
 }
 
 /// Korean message for an error (no technical detail).
@@ -40,7 +89,7 @@ mod tests {
     use telima_core::profile::ProfileName;
     use telima_core::rules::RuleViolation;
 
-    use super::{error_text, notice, NoticeKind};
+    use super::{NoticeKind, error_text, notice};
     use crate::AppError;
 
     fn busy() -> AppError {
@@ -72,10 +121,7 @@ mod tests {
             NoticeKind::NotFound
         );
         assert_eq!(notice(&busy()).kind, NoticeKind::Busy);
-        assert_eq!(
-            notice(&AppError::InUse("pg".into())).kind,
-            NoticeKind::Busy
-        );
+        assert_eq!(notice(&AppError::InUse("pg".into())).kind, NoticeKind::Busy);
         assert_eq!(
             notice(&AppError::Invalid(vec![RuleViolation::RosettaUnavailable])).kind,
             NoticeKind::Invalid

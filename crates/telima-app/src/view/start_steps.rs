@@ -38,25 +38,66 @@ impl StartProgress {
 
 /// The 0-based step a colima log message belongs to, if any.
 pub fn start_step_of(message: &str) -> Option<usize> {
-    let _ = message;
-    unimplemented!("RED: start_step_of")
+    // Checked from the last step backwards so that e.g. "provisioning docker" is step 4.
+    const RULES: [(usize, &[&str]); 6] = [
+        (5, &["health", "ready"]),
+        (3, &["provision"]),
+        (4, &["docker"]),
+        (2, &["boot", "vm"]),
+        (1, &["network", "address"]),
+        (0, &["config", "exist", "profile"]),
+    ];
+    let lower = message.to_ascii_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect();
+    RULES.iter().find_map(|(step, keys)| {
+        keys.iter()
+            .any(|k| words.iter().any(|w| w.starts_with(k)))
+            .then_some(*step)
+    })
 }
 
 /// Fold log messages into progress; the furthest step seen wins.
 pub fn start_progress<'a>(messages: impl IntoIterator<Item = &'a str>) -> StartProgress {
-    let _ = messages;
-    unimplemented!("RED: start_progress")
+    let current = messages
+        .into_iter()
+        .filter_map(start_step_of)
+        .map(|s| s + 1)
+        .max()
+        .unwrap_or(0);
+    let label = if current == 0 {
+        "준비 중"
+    } else {
+        START_STEPS[current - 1]
+    };
+    StartProgress {
+        current,
+        total: START_STEPS.len(),
+        label,
+    }
 }
 
 /// Per-step state for `current` (1-based step reached, 0 = none).
 pub fn step_states(current: usize) -> [StepState; 6] {
-    let _ = current;
-    unimplemented!("RED: step_states")
+    std::array::from_fn(|i| {
+        let step = i + 1;
+        if step < current {
+            StepState::Done
+        } else if step == current {
+            StepState::Current
+        } else {
+            StepState::Pending
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{START_STEPS, StartProgress, StepState, start_progress, start_step_of, step_states};
+    use super::{
+        START_STEPS, StartProgress, StepState, start_progress, start_step_of, step_states,
+    };
 
     #[test]
     fn step_names_match_canvas() {
