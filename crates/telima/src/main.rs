@@ -86,6 +86,7 @@ fn main() {
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        telima_ui::init(cx);
         let options = telima_ui::main_window_options(cx);
         let app = app.clone();
         gpui_kit::open_window(options, cx, move |_, cx| {

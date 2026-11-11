@@ -27,13 +27,34 @@ impl Render for RootView {
     }
 }
 
-/// Window options for the main window.
+/// App-wide setup for telima-ui. Call once at startup, after `gpui_kit::init`.
+/// Registers the bundled Plex fonts; on failure the OS fallback fonts are used.
+pub fn init(cx: &mut App) {
+    let fonts = fonts::FONTS
+        .iter()
+        .map(|(_, bytes)| std::borrow::Cow::Borrowed(*bytes))
+        .collect();
+    if let Err(err) = cx.text_system().add_fonts(fonts) {
+        eprintln!("telima: bundled fonts not registered: {err}");
+    }
+}
+
+/// Window options for the main window. The title bar is transparent: the traffic lights sit in
+/// the sidebar's titlebar strip and the main column draws its own titlebar.
 pub fn main_window_options(cx: &App) -> WindowOptions {
+    use theme::metric;
     WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(1080.), px(720.)), cx)),
+        window_bounds: Some(WindowBounds::centered(
+            size(px(metric::WINDOW_W), px(metric::WINDOW_H)),
+            cx,
+        )),
         titlebar: Some(TitlebarOptions {
             title: Some(APP_NAME.into()),
-            ..Default::default()
+            appears_transparent: true,
+            traffic_light_position: Some(point(
+                px(metric::TRAFFIC_LIGHT_X),
+                px(metric::TRAFFIC_LIGHT_Y),
+            )),
         }),
         ..Default::default()
     }
@@ -54,7 +75,7 @@ mod tests {
     fn titlebar_is_transparent_with_traffic_lights_in_the_sidebar_strip(cx: &mut TestAppContext) {
         use crate::theme::metric;
         use gpui_kit::{point, px};
-        let options = cx.update(super::main_window_options);
+        let options = cx.update(|cx| super::main_window_options(cx));
         let titlebar = options.titlebar.expect("titlebar options");
         assert!(titlebar.appears_transparent);
         assert_eq!(

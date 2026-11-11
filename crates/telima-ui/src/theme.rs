@@ -28,6 +28,13 @@ impl Rgb {
     }
 }
 
+/// A token color with alpha (CSS `rgba()`), for overlays such as the scrim.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rgba {
+    pub rgb: Rgb,
+    pub alpha: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Appearance {
     Light,
@@ -35,7 +42,7 @@ pub enum Appearance {
 }
 
 /// Semantic colors for one appearance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     pub bg: Rgb,
     pub bg_sunken: Rgb,
@@ -43,6 +50,8 @@ pub struct Palette {
     pub bg_hover: Rgb,
     pub bg_raised: Rgb,
     pub bg_selected: Rgb,
+    /// Pressed (active) background of default and ghost buttons and segments.
+    pub bg_pressed: Rgb,
     pub border: Rgb,
     pub border_strong: Rgb,
     pub text: Rgb,
@@ -50,6 +59,10 @@ pub struct Palette {
     pub text_disabled: Rgb,
     pub accent: Rgb,
     pub accent_text: Rgb,
+    /// Primary button hover (CSS accent + brightness 1.08); keeps `on_accent` >= 4.5:1.
+    pub accent_hover: Rgb,
+    /// Primary button pressed (accent - 8% brightness).
+    pub accent_pressed: Rgb,
     pub on_accent: Rgb,
     pub focus: Rgb,
     pub ok: Rgb,
@@ -64,6 +77,8 @@ pub struct Palette {
     pub bar: Rgb,
     pub track: Rgb,
     pub skeleton: Rgb,
+    /// Modal backdrop (CSS --scrim).
+    pub scrim: Rgba,
 }
 
 /// Palette for `appearance`.
@@ -100,6 +115,7 @@ const LIGHT: Palette = Palette {
     bg_hover: gray::G100,
     bg_raised: gray::G0,
     bg_selected: Rgb(0xEEEBFC),
+    bg_pressed: gray::G200,
     border: gray::G200,
     border_strong: gray::G300,
     text: gray::G900,
@@ -107,6 +123,8 @@ const LIGHT: Palette = Palette {
     text_disabled: gray::G400,
     accent: Rgb(0x6240E0),
     accent_text: Rgb(0x5634D0),
+    accent_hover: Rgb(0x6A45F2),
+    accent_pressed: Rgb(0x5A3BCE),
     on_accent: gray::G0,
     focus: Rgb(0x6240E0),
     ok: Rgb(0x12733A),
@@ -121,6 +139,10 @@ const LIGHT: Palette = Palette {
     bar: gray::G700,
     track: gray::G100,
     skeleton: gray::G100,
+    scrim: Rgba {
+        rgb: gray::G900,
+        alpha: 0.32,
+    },
 };
 
 const DARK: Palette = Palette {
@@ -130,6 +152,7 @@ const DARK: Palette = Palette {
     bg_hover: gray::G800,
     bg_raised: gray::G800,
     bg_selected: Rgb(0x272338),
+    bg_pressed: gray::G750,
     border: gray::G750,
     border_strong: gray::G700,
     text: gray::G100,
@@ -137,6 +160,8 @@ const DARK: Palette = Palette {
     text_disabled: gray::G600,
     accent: Rgb(0x6D4AEB),
     accent_text: Rgb(0xA891FF),
+    accent_hover: Rgb(0x7650FE),
+    accent_pressed: Rgb(0x6444D8),
     on_accent: gray::G0,
     focus: Rgb(0xA891FF),
     ok: Rgb(0x3CC37A),
@@ -151,6 +176,10 @@ const DARK: Palette = Palette {
     bar: gray::G300,
     track: gray::G800,
     skeleton: gray::G800,
+    scrim: Rgba {
+        rgb: Rgb(0x000000),
+        alpha: 0.5,
+    },
 };
 
 /// Font size and line height in px.
@@ -197,6 +226,66 @@ pub mod metric {
     pub const INSPECTOR: f32 = 260.0;
     pub const ICON: f32 = 16.0;
     pub const ICON_STROKE: f32 = 1.5;
+    /// Status dot / ring diameter.
+    pub const DOT: f32 = 8.0;
+    /// Status chip height (CSS .chip).
+    pub const CHIP_H: f32 = 22.0;
+    /// Chip leading padding (CSS .chip padding-left), before the status shape.
+    pub const CHIP_PAD_START: f32 = 6.0;
+    /// Button heights (CSS .btn; small variant for dense rows).
+    pub const BTN: f32 = 28.0;
+    pub const BTN_SM: f32 = 24.0;
+    /// Button horizontal padding (CSS .btn padding 0 10px).
+    pub const BTN_PAD_X: f32 = 10.0;
+    /// Gap between a segmented control's border and its segments.
+    pub const SEGMENT_INSET: f32 = 2.0;
+    /// Tab bar height (CSS .tab).
+    pub const TAB_H: f32 = 36.0;
+    /// Key-value label column (CSS .kv) and form label column.
+    pub const KV_LABEL: f32 = 88.0;
+    pub const FIELD_LABEL: f32 = 96.0;
+    /// Number input and select widths in forms.
+    pub const FIELD_NUM: f32 = 64.0;
+    pub const FIELD_SELECT: f32 = 220.0;
+    /// Dialog widths (confirm dialogs use the small one).
+    pub const DIALOG_W: f32 = 420.0;
+    pub const DIALOG_W_SM: f32 = 360.0;
+    /// Console log panel height.
+    pub const LOG_PANEL_H: f32 = 240.0;
+    /// Skeleton bar height (CSS .skel) and progress bar height (CSS .bar).
+    pub const SKELETON_H: f32 = 10.0;
+    pub const BAR_H: f32 = 4.0;
+    /// Focus ring and tab indicator width.
+    pub const FOCUS_RING: f32 = 2.0;
+    /// Switch track and knob (CSS .switch).
+    pub const SWITCH_W: f32 = 28.0;
+    pub const SWITCH_H: f32 = 16.0;
+    pub const SWITCH_KNOB: f32 = 12.0;
+    /// Initial window size (CSS .win).
+    pub const WINDOW_W: f32 = 1080.0;
+    pub const WINDOW_H: f32 = 720.0;
+    /// macOS traffic lights: 12 px buttons centred in the sidebar's titlebar strip.
+    pub const TRAFFIC_LIGHT_X: f32 = 14.0;
+    pub const TRAFFIC_LIGHT_Y: f32 = (TITLEBAR - 12.0) / 2.0;
+}
+
+/// Durations and easing. Enter/exit and state changes use ease-out; constant motion is linear.
+/// GPUI's `with_animation` renders the end state when the OS asks to reduce motion.
+pub mod motion {
+    use std::time::Duration;
+
+    /// Hover/press feedback, small fades (scrim).
+    pub const FAST: Duration = Duration::from_millis(150);
+    /// Dialogs, panels, tab changes.
+    pub const BASE: Duration = Duration::from_millis(200);
+    /// One full turn of the busy arc (linear, repeating).
+    pub const SPIN: Duration = Duration::from_millis(900);
+
+    /// Cubic ease-out: starts fast, settles gently.
+    pub fn ease_out(t: f32) -> f32 {
+        let inv = 1.0 - t.clamp(0.0, 1.0);
+        1.0 - inv * inv * inv
+    }
 }
 
 #[cfg(test)]

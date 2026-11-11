@@ -1,6 +1,6 @@
 use gpui_kit::{
-    AppContext, Bounds, Context, IntoElement, Modifiers, ParentElement, Render, Styled,
-    TestAppContext, Window, div, point, px, size,
+    Bounds, Context, IntoElement, Modifiers, ParentElement, Render, Styled, TestAppContext, Window,
+    div, point, px, size,
 };
 
 use super::button::{ButtonVariant, button, button_colors, button_disabled, icon_button};
