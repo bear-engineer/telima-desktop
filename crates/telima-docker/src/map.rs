@@ -1,7 +1,7 @@
 //! Pure mappings from bollard Docker Engine API models to telima-core entities.
 //! No I/O here: every function takes an already-decoded engine model.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bollard::container::LogOutput;
 use bollard::models::{
@@ -98,15 +98,30 @@ pub const VOLUME_SIZE_MIN_API: (u32, u32) = (1, 52);
 
 /// Whether an engine reporting `api_version` ("1.48") provides volume sizes.
 pub fn supports_volume_sizes(api_version: &str) -> bool {
-    let _ = api_version;
-    todo!()
+    let mut parts = api_version.split('.').map(|p| p.parse::<u32>());
+    match (parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) => (major, minor) >= VOLUME_SIZE_MIN_API,
+        _ => false,
+    }
 }
 
 /// Containers per volume name, from the mounts of every listed container
 /// (running or not). A container mounting a volume twice counts once.
 pub fn volume_mount_counts(containers: &[ContainerSummary]) -> HashMap<String, i64> {
-    let _ = containers;
-    todo!()
+    let mut counts = HashMap::new();
+    for container in containers {
+        let names: HashSet<&str> = container
+            .mounts
+            .iter()
+            .flatten()
+            .filter(|m| m.typ.as_deref() == Some("volume"))
+            .filter_map(|m| m.name.as_deref())
+            .collect();
+        for name in names {
+            *counts.entry(name.to_owned()).or_insert(0) += 1;
+        }
+    }
+    counts
 }
 
 /// Fill `ref_count` from mount counts where `df` gave none; a volume no
@@ -115,8 +130,15 @@ pub fn with_mount_refs(
     volumes: Vec<DomainVolume>,
     mounts: &HashMap<String, i64>,
 ) -> Vec<DomainVolume> {
-    let _ = mounts;
     volumes
+        .into_iter()
+        .map(|mut volume| {
+            if volume.ref_count.is_none() {
+                volume.ref_count = Some(mounts.get(&volume.name).copied().map_or(0, non_negative));
+            }
+            volume
+        })
+        .collect()
 }
 
 /// System df response to disk usage per section; missing sections count as zero.

@@ -162,10 +162,18 @@ impl ContainerEngine for DockerEngine {
             .await
             .map_err(map_error)?;
         let usage = self.volume_usage().await;
-        Ok(map::map_volumes(
-            &response.volumes.unwrap_or_default(),
-            &usage,
-        ))
+        let volumes = map::map_volumes(&response.volumes.unwrap_or_default(), &usage);
+        // Engines before API 1.52 give no usage through `df` (see
+        // `map::VOLUME_SIZE_MIN_API`): derive reference counts from the mounts.
+        // If the container list fails, counts stay unknown rather than zero.
+        let options = ListContainersOptionsBuilder::default().all(true).build();
+        match self.docker.list_containers(Some(options)).await {
+            Ok(containers) => Ok(map::with_mount_refs(
+                volumes,
+                &map::volume_mount_counts(&containers),
+            )),
+            Err(_) => Ok(volumes),
+        }
     }
 
     async fn remove_volume(&self, name: &str) -> PortResult<()> {

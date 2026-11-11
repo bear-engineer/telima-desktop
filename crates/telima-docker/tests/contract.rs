@@ -12,6 +12,7 @@ use futures_util::TryStreamExt;
 use telima_core::container::LogStream;
 use telima_core::ports::{ContainerEngine, PortError};
 use telima_docker::DockerEngine;
+use telima_docker::map::supports_volume_sizes;
 
 const IMAGE: &str = "alpine:3";
 
@@ -35,6 +36,11 @@ async fn docker_engine_contract() {
     let engine = DockerEngine::connect(&socket).expect("connect");
     let raw = Docker::connect_with_unix(&socket, 120, bollard::API_DEFAULT_VERSION).expect("raw");
     let name = unique("telima-contract");
+    let server = raw.version().await.expect("version");
+    println!(
+        "docker server version {:?}, API {:?}",
+        server.version, server.api_version
+    );
 
     raw.create_image(
         Some(
@@ -205,11 +211,27 @@ async fn volumes_report_size_and_ref_count() {
 
         let volumes = engine.volumes().await.expect("volumes");
         let found = volumes.iter().find(|v| v.name == vol).expect("listed");
-        assert!(
-            found.size_bytes.is_some_and(|s| s > 0),
-            "size known: {found:?}"
-        );
-        assert!(found.ref_count.is_some(), "ref count known: {found:?}");
+        // Reference counts come from container mounts on every engine.
+        assert_eq!(found.ref_count, Some(1), "ref count: {found:?}");
+        // Sizes need `df` in the API >= 1.52 shape (see `VOLUME_SIZE_MIN_API`).
+        let server_api = raw
+            .version()
+            .await
+            .expect("version")
+            .api_version
+            .unwrap_or_default();
+        println!("docker server API {server_api}");
+        if supports_volume_sizes(&server_api) {
+            assert!(
+                found.size_bytes.is_some_and(|s| s > 0),
+                "size known on API {server_api}: {found:?}"
+            );
+        } else {
+            assert_eq!(
+                found.size_bytes, None,
+                "no sizes before API 1.52: {found:?}"
+            );
+        }
     }
     .await;
 
