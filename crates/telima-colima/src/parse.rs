@@ -2,6 +2,7 @@
 use telima_core::profile::{
     Profile, ProfileName, ProfileStatus, ProgressEvent, ProgressLevel, Runtime,
 };
+use telima_core::version::ColimaVersion;
 
 /// Failure to read a piece of `colima` output.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -109,18 +110,76 @@ pub fn parse_log_line(line: &str) -> ProgressEvent {
     ProgressEvent { level, message }
 }
 
+/// What `colima version` prints: colima's own version plus the docker versions it lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionInfo {
+    pub colima: ColimaVersion,
+    pub docker_client: Option<String>,
+    pub docker_server: Option<String>,
+}
+
 /// Parse the first line of `colima version` output, e.g. `colima version 0.10.3`.
-pub fn parse_version(output: &str) -> Result<(u32, u32, u32), ParseError> {
+pub fn parse_version(output: &str) -> Result<ColimaVersion, ParseError> {
     let first = output.lines().next().unwrap_or("");
     let bad = || ParseError::Version(first.to_owned());
     let token = first
         .split_whitespace()
-        .map(|t| t.strip_prefix('v').unwrap_or(t))
-        .find(|t| t.starts_with(|c: char| c.is_ascii_digit()))
+        .find(|t| {
+            t.trim_start_matches('v')
+                .starts_with(|c: char| c.is_ascii_digit())
+        })
         .ok_or_else(bad)?;
-    let mut parts = token.split('.').map(|p| p.parse::<u32>());
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(Ok(a)), Some(Ok(b)), Some(Ok(c))) => Ok((a, b, c)),
-        _ => Err(bad()),
-    }
+    ColimaVersion::parse(token).map_err(|_| bad())
+}
+
+/// Parse the whole `colima version` output (`client:` / `server:` lines are optional).
+pub fn parse_version_info(output: &str) -> Result<VersionInfo, ParseError> {
+    let colima = parse_version(output)?;
+    let field = |key: &str| {
+        output.lines().find_map(|l| {
+            l.strip_prefix(key)
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        })
+    };
+    Ok(VersionInfo {
+        colima,
+        docker_client: field("client:"),
+        docker_server: field("server:"),
+    })
+}
+
+/// The fields of `colima status -p <name> --json` we use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusInfo {
+    pub runtime: Runtime,
+    pub kubernetes: bool,
+    pub address: Option<String>,
+    pub cpus: u32,
+}
+
+/// Parse `colima status --json` output (one object; no uptime field exists in 0.10.3).
+pub fn parse_status(output: &str) -> Result<StatusInfo, ParseError> {
+    let v: serde_json::Value =
+        serde_json::from_str(output.trim()).map_err(|e| ParseError::Json {
+            line: 1,
+            message: e.to_string(),
+        })?;
+    let runtime = match str_field(&v, "runtime") {
+        "docker" => Runtime::Docker,
+        "containerd" => Runtime::Containerd,
+        "incus" => Runtime::Incus,
+        other => return Err(ParseError::Runtime(other.to_owned())),
+    };
+    Ok(StatusInfo {
+        runtime,
+        kubernetes: v
+            .get("kubernetes")
+            .and_then(|k| k.as_bool())
+            .unwrap_or(false),
+        address: Some(str_field(&v, "ip_address"))
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned),
+        cpus: u32::try_from(u64_field(&v, "cpu")).unwrap_or(u32::MAX),
+    })
 }

@@ -283,7 +283,7 @@ async fn spec_reads_colima_yaml() {
 }
 
 #[tokio::test]
-async fn update_edits_only_cpu_memory_disk() {
+async fn update_edits_resources_mounts_and_kubernetes_only() {
     let fake = Fake::with_alpha();
     let home = tmp_home("upd");
     let path = write_yaml(&home, "alpha", YAML);
@@ -297,7 +297,8 @@ async fn update_edits_only_cpu_memory_disk() {
     let want = YAML
         .replace("cpu: 8", "cpu: 4")
         .replace("memory: 8", "memory: 6")
-        .replace("disk: 100", "disk: 120");
+        .replace("disk: 100", "disk: 120")
+        + "mounts: []\nkubernetes:\n  enabled: false\n"; // absent keys are appended
     assert_eq!(got, want);
     assert!(
         fake.calls().iter().all(|a| a[1] == "ls"),
