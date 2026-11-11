@@ -1,0 +1,4 @@
+#!/bin/sh
+# Block commits that contain secrets. Enable with: git config core.hooksPath .githooks
+command -v gitleaks >/dev/null 2>&1 || { echo "gitleaks not installed (brew install gitleaks)"; exit 1; }
+exec gitleaks protect --staged --redact --verbose

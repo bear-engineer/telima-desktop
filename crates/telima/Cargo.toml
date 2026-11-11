@@ -1,0 +1,19 @@
+[package]
+name = "telima"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+telima-core.workspace = true
+telima-app.workspace = true
+telima-colima.workspace = true
+telima-docker.workspace = true
+telima-ui.workspace = true
+gpui-kit.workspace = true

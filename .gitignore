@@ -1,0 +1,12 @@
+/target
+*.log
+.DS_Store
+# secrets must never be committed
+.env
+.env.*
+*.p12
+*.p8
+AuthKey_*.p8
+*.mobileprovision
+*.pem
+*.key
