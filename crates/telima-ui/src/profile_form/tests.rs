@@ -10,8 +10,8 @@ use telima_app::view::confirm_delete_profile;
 use telima_core::profile::{HostOs, MountType, ProfileName, ProfileSpec, Runtime, VmType};
 
 use super::progress::CURRENT_STEP_FILL;
-use crate::theme::metric;
 use super::{DeleteConfirm, DeleteEvent, Field, ProfileEditor, StartProgress};
+use crate::theme::metric;
 
 #[derive(Default)]
 struct QueueSpawner(Mutex<Vec<BoxFuture<'static, ()>>>);
@@ -326,7 +326,9 @@ fn inline_form_is_capped_and_buttons_sit_at_its_right_edge(cx: &mut TestAppConte
     let (_, cx) = cx.add_window_view(|_, cx| ProfileEditor::create(app, HostOs::MacOs, cx));
     cx.simulate_resize(size(px(metric::WINDOW_W), px(metric::WINDOW_H)));
     cx.run_until_parked();
-    let frame = cx.debug_bounds("profile-form-frame").expect("form rendered");
+    let frame = cx
+        .debug_bounds("profile-form-frame")
+        .expect("form rendered");
     let cancel = cx.debug_bounds("form-cancel").expect("cancel rendered");
     let submit = cx.debug_bounds("form-submit").expect("submit rendered");
     assert!(

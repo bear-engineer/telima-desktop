@@ -771,6 +771,8 @@ impl Render for ProfileEditor {
         // profile header (edit) is the only title.
         let frame = v_flex()
             .debug_selector(|| "profile-form-frame".to_string())
+            .w_full()
+            .max_w(px(metric::DIALOG_W))
             .gap(space(2))
             .text_color(hsla(p.text))
             .font_family(font::SANS)
