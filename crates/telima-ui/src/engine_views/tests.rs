@@ -177,7 +177,11 @@ fn removing_a_running_container_needs_an_explicit_force_confirm(cx: &mut TestApp
 
     f.view.update(cx, |v, cx| v.accept(cx));
     f.settle(cx);
-    assert!(f.engine.calls().contains(&"remove c1 force=true".to_string()));
+    assert!(
+        f.engine
+            .calls()
+            .contains(&"remove c1 force=true".to_string())
+    );
     assert!(f.view.read_with(cx, |v, _| v.dialog().is_none()));
 }
 
@@ -199,15 +203,26 @@ fn log_viewer_follows_and_can_stop_following(cx: &mut TestAppContext) {
     f.settle(cx);
     let (follow, lines) = f.view.read_with(cx, |v, _| {
         let log = v.log().unwrap();
-        (log.follow, log.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>())
+        (
+            log.follow,
+            log.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>(),
+        )
     });
     assert!(follow);
     assert_eq!(lines, ["ready to accept connections"]);
-    assert!(f.engine.calls().contains(&"logs c1 follow=true".to_string()));
+    assert!(
+        f.engine
+            .calls()
+            .contains(&"logs c1 follow=true".to_string())
+    );
 
     f.view.update(cx, |v, cx| v.set_follow(false, cx));
     f.settle(cx);
-    assert!(f.engine.calls().contains(&"logs c1 follow=false".to_string()));
+    assert!(
+        f.engine
+            .calls()
+            .contains(&"logs c1 follow=false".to_string())
+    );
 }
 
 #[gpui_kit::test]
@@ -277,9 +292,10 @@ fn error_state_shows_retry_and_retry_reloads(cx: &mut TestAppContext) {
     f.fail.store(false, Ordering::SeqCst);
     f.view.update(cx, |v, cx| v.retry(cx));
     f.settle(cx);
-    let ready = f
-        .view
-        .read_with(cx, |v, _| matches!(v.containers(), ListState::Ready(r) if r.len() == 2));
+    let ready = f.view.read_with(
+        cx,
+        |v, _| matches!(v.containers(), ListState::Ready(r) if r.len() == 2),
+    );
     assert!(ready);
 }
 
@@ -288,8 +304,9 @@ fn empty_list_is_ready_with_no_rows(cx: &mut TestAppContext) {
     let f = fixture(cx, Tab::Containers);
     f.engine.containers.lock().unwrap().clear();
     f.settle(cx);
-    let empty = f
-        .view
-        .read_with(cx, |v, _| matches!(v.containers(), ListState::Ready(r) if r.is_empty()));
+    let empty = f.view.read_with(
+        cx,
+        |v, _| matches!(v.containers(), ListState::Ready(r) if r.is_empty()),
+    );
     assert!(empty);
 }
