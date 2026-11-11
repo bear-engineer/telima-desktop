@@ -241,6 +241,7 @@ impl Task {
 type EngineFactory = dyn Fn(&ProfileName) -> PortResult<Arc<dyn DynEngine>> + Send + Sync;
 
 struct Inner {
+    os: HostOs,
     profiles: ProfileService<SharedVm>,
     engine_for: Box<EngineFactory>,
     spawner: Arc<dyn Spawner>,
@@ -274,6 +275,7 @@ impl App {
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
+                os,
                 profiles: ProfileService::new(SharedVm(vm), os),
                 engine_for: Box::new(engine_for),
                 spawner,
@@ -301,6 +303,23 @@ impl App {
     /// True while an operation runs on `name`.
     pub fn is_busy(&self, name: &ProfileName) -> bool {
         self.inner.profiles.is_busy(name)
+    }
+
+    /// Host OS the profile rules are checked against (the editor needs it).
+    pub fn host_os(&self) -> HostOs {
+        self.inner.os
+    }
+
+    /// Stored spec of `name` (`VmManager::spec`), the starting point of the edit form.
+    pub fn profile_spec(
+        &self,
+        name: ProfileName,
+        done: impl FnOnce(Result<ProfileSpec, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { Ok(VmManager::spec(app.profiles.vm(), &name).await?) },
+            done,
+        )
     }
 
     pub fn list_profiles(
