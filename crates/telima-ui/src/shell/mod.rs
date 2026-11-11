@@ -2,7 +2,7 @@
 //!
 //! Use-case callbacks run on the spawner's thread, so they only push a [`Msg`] into the
 //! inbox; [`MainView::pump`] applies them on the GPUI thread (a poll task calls it).
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,11 +12,15 @@ use gpui_kit::*;
 use telima_app::AppError;
 use telima_app::profiles::Lifecycle;
 use telima_app::runtime::App as Telima;
-use telima_app::view::{ProfileDetail, ProfileRow, StatusKind, profile_detail, profile_rows};
-use telima_core::profile::{Profile, ProfileName};
+use telima_app::view::{
+    ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile, profile_detail, profile_rows,
+};
+use telima_core::profile::{Profile, ProfileName, ProfileSpec};
 
-use crate::engine_views::EngineViews;
-use crate::profile_form::ProfileForm;
+use crate::engine_views::EnginePanel;
+use crate::profile_form::{
+    DeleteConfirm, DeleteEvent, FormEvent, ProfileEditor, ProgressEnd, StartProgress,
+};
 use crate::style::{hsla, palette, space};
 use crate::theme::{Palette, font, metric};
 
@@ -26,7 +30,10 @@ const POLL: Duration = Duration::from_millis(50);
 /// Result of a use case, sent from the spawner thread to the view.
 enum Msg {
     Profiles(Result<Vec<Profile>, AppError>),
-    Finished(ProfileName, Result<(), AppError>),
+    /// Stored spec for the edit form.
+    Spec(ProfileName, Result<ProfileSpec, AppError>),
+    /// What a delete would remove: container count, volume count, volume bytes.
+    DeleteFacts(ProfileName, usize, usize, u64),
 }
 
 type Inbox = Arc<Mutex<Vec<Msg>>>;
@@ -61,9 +68,13 @@ pub struct MainView {
     pending: HashSet<ProfileName>,
     error: Option<String>,
     tab: Tab,
-    editing: bool,
-    form: Entity<ProfileForm>,
-    engine: Entity<EngineViews>,
+    engine: Entity<EnginePanel>,
+    /// Create/edit form; replaces the tab body while open.
+    editor: Option<(Entity<ProfileEditor>, Subscription)>,
+    /// Log of the last start/stop/restart per profile; the selected one's is shown.
+    progress: HashMap<ProfileName, (Entity<StartProgress>, Subscription)>,
+    /// Typed-name delete confirmation, drawn over the window.
+    delete_confirm: Option<(Entity<DeleteConfirm>, Subscription)>,
     _poll: Task<()>,
 }
 
@@ -78,16 +89,17 @@ impl MainView {
             }
         });
         let mut view = Self {
-            app,
+            app: app.clone(),
             inbox: Inbox::default(),
             profiles: Vec::new(),
             selected: None,
             pending: HashSet::new(),
             error: None,
             tab: Tab::Containers,
-            editing: false,
-            form: cx.new(|_| ProfileForm),
-            engine: cx.new(|_| EngineViews),
+            engine: cx.new(|cx| EnginePanel::new(app.clone(), cx)),
+            editor: None,
+            progress: HashMap::new(),
+            delete_confirm: None,
             _poll: poll,
         };
         view.refresh();
@@ -108,6 +120,26 @@ impl MainView {
         self.tab
     }
 
+    /// Containers / images / volumes of the selected profile.
+    pub fn engine(&self) -> &Entity<EnginePanel> {
+        &self.engine
+    }
+
+    /// Open create/edit form.
+    pub fn editor(&self) -> Option<&Entity<ProfileEditor>> {
+        self.editor.as_ref().map(|(e, _)| e)
+    }
+
+    /// Log of the selected profile's last lifecycle command.
+    pub fn progress(&self) -> Option<&Entity<StartProgress>> {
+        self.progress.get(self.selected.as_ref()?).map(|(e, _)| e)
+    }
+
+    /// Open delete confirmation.
+    pub fn delete_confirm(&self) -> Option<&Entity<DeleteConfirm>> {
+        self.delete_confirm.as_ref().map(|(e, _)| e)
+    }
+
     /// Reloads the profile list.
     pub fn refresh(&mut self) {
         let inbox = self.inbox.clone();
@@ -115,8 +147,19 @@ impl MainView {
             .list_profiles(move |r| inbox.lock().unwrap().push(Msg::Profiles(r)));
     }
 
-    /// Applies finished use-case results. Called by the poll task (and by tests).
+    /// Applies finished use-case results, its own and the child views'. Called by the poll
+    /// task (and by tests). Child views also poll themselves; pumping twice is harmless.
     pub fn pump(&mut self, cx: &mut Context<Self>) {
+        self.engine.update(cx, |e, cx| e.pump(cx));
+        for (p, _) in self.progress.values() {
+            p.update(cx, |p, cx| p.pump(cx));
+        }
+        if let Some((e, _)) = &self.editor {
+            e.update(cx, |e, cx| e.pump(cx));
+        }
+        if let Some((d, _)) = &self.delete_confirm {
+            d.update(cx, |d, cx| d.pump(cx));
+        }
         let msgs = std::mem::take(&mut *self.inbox.lock().unwrap());
         if msgs.is_empty() {
             return;
@@ -133,17 +176,54 @@ impl MainView {
                         self.selected = list.first().map(|p| p.name.clone());
                     }
                     self.profiles = list;
+                    self.sync_engine(cx);
                 }
                 Msg::Profiles(Err(e)) => self.error = Some(e.to_string()),
-                Msg::Finished(name, result) => {
-                    self.pending.remove(&name);
-                    if let Err(e) = result {
-                        self.error = Some(e.to_string());
+                Msg::Spec(name, Ok(spec)) => {
+                    if self.selected.as_ref() == Some(&name) {
+                        let (app, os) = (self.app.clone(), self.app.host_os());
+                        let editor = cx.new(|cx| ProfileEditor::edit(app, os, spec, cx));
+                        self.open_editor(editor, cx);
                     }
-                    self.refresh();
+                }
+                Msg::Spec(_, Err(e)) => self.error = Some(e.to_string()),
+                Msg::DeleteFacts(name, containers, volumes, bytes) => {
+                    if self.selected.as_ref() == Some(&name) && self.delete_confirm.is_none() {
+                        let copy = confirm_delete_profile(&name, containers, volumes, bytes);
+                        let app = self.app.clone();
+                        let confirm = cx.new(|cx| DeleteConfirm::new(app, name, copy, cx));
+                        let sub = cx.subscribe(&confirm, |v, _, ev: &DeleteEvent, cx| {
+                            v.delete_confirm = None;
+                            if let DeleteEvent::Deleted(_) = ev {
+                                v.refresh();
+                            }
+                            cx.notify();
+                        });
+                        self.delete_confirm = Some((confirm, sub));
+                    }
                 }
             }
         }
+        cx.notify();
+    }
+
+    /// Points the engine panel at the selected profile and tab.
+    fn sync_engine(&mut self, cx: &mut Context<Self>) {
+        let (profile, tab) = (self.selected.clone(), self.tab);
+        self.engine
+            .update(cx, |e, cx| e.set_target(profile, tab, cx));
+    }
+
+    fn open_editor(&mut self, editor: Entity<ProfileEditor>, cx: &mut Context<Self>) {
+        let sub = cx.subscribe(&editor, |v, _, ev: &FormEvent, cx| {
+            v.editor = None;
+            if let FormEvent::Saved(name) = ev {
+                v.selected = Some(name.clone());
+                v.refresh();
+            }
+            cx.notify();
+        });
+        self.editor = Some((editor, sub));
         cx.notify();
     }
 
@@ -166,13 +246,15 @@ impl MainView {
     pub fn select(&mut self, name: &str, cx: &mut Context<Self>) {
         if let Some(p) = self.profiles.iter().find(|p| p.name.as_str() == name) {
             self.selected = Some(p.name.clone());
-            self.editing = false;
+            self.editor = None;
+            self.sync_engine(cx);
             cx.notify();
         }
     }
 
     pub fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
+        self.sync_engine(cx);
         cx.notify();
     }
 
@@ -188,10 +270,69 @@ impl MainView {
         self.run(Lifecycle::Restart, cx);
     }
 
-    /// Shows the profile form for the selected profile.
+    /// Fetches the stored spec of the selected profile, then opens the edit form.
     pub fn edit(&mut self, cx: &mut Context<Self>) {
-        self.editing = true;
+        let Some(name) = self.selected.clone() else {
+            return;
+        };
+        if self.busy(&name) {
+            return;
+        }
+        self.error = None;
+        let inbox = self.inbox.clone();
+        let key = name.clone();
+        self.app
+            .profile_spec(name, move |r| inbox.lock().unwrap().push(Msg::Spec(key, r)));
         cx.notify();
+    }
+
+    /// Opens the create form.
+    pub fn new_profile(&mut self, cx: &mut Context<Self>) {
+        let (app, os) = (self.app.clone(), self.app.host_os());
+        let editor = cx.new(|cx| ProfileEditor::create(app, os, cx));
+        self.open_editor(editor, cx);
+    }
+
+    /// Counts what the selected profile's delete would remove, then opens the typed-name
+    /// confirmation. A stopped VM has no reachable engine: its counts show as 0.
+    pub fn delete(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.selected.clone() else {
+            return;
+        };
+        if self.busy(&name) || self.delete_confirm.is_some() {
+            return;
+        }
+        let inbox = self.inbox.clone();
+        let app = self.app.clone();
+        let key = name.clone();
+        self.app.containers(name, move |containers| {
+            let containers = containers.map(|c| c.len()).unwrap_or(0);
+            app.volumes(key.clone(), move |volumes| {
+                let (count, bytes) = volumes
+                    .map(|v| (v.len(), v.iter().filter_map(|v| v.size_bytes).sum()))
+                    .unwrap_or((0, 0));
+                inbox
+                    .lock()
+                    .unwrap()
+                    .push(Msg::DeleteFacts(key, containers, count, bytes));
+            });
+        });
+        cx.notify();
+    }
+
+    /// Hides an ended progress log.
+    pub fn close_progress(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.selected.clone() else {
+            return;
+        };
+        let ended = self
+            .progress
+            .get(&name)
+            .is_some_and(|(p, _)| !p.read(cx).is_running());
+        if ended {
+            self.progress.remove(&name);
+            cx.notify();
+        }
     }
 
     fn run(&mut self, cmd: Lifecycle, cx: &mut Context<Self>) {
@@ -203,14 +344,21 @@ impl MainView {
         }
         self.pending.insert(name.clone());
         self.error = None;
-        let inbox = self.inbox.clone();
-        let done_name = name.clone();
-        self.app.run_profile(
-            name,
-            cmd,
-            |_| {},
-            move |r| inbox.lock().unwrap().push(Msg::Finished(done_name, r)),
-        );
+        self.editor = None;
+        let app = self.app.clone();
+        let key = name.clone();
+        let target = name.clone();
+        let progress = cx.new(|cx| StartProgress::new(app, target, cmd, cx));
+        let sub = cx.subscribe(&progress, move |v, _, ev: &ProgressEnd, cx| {
+            v.pending.remove(&key);
+            // A clean finish needs no log; failures and cancels stay until closed.
+            if *ev == ProgressEnd::Done {
+                v.progress.remove(&key);
+            }
+            v.refresh();
+            cx.notify();
+        });
+        self.progress.insert(name, (progress, sub));
         cx.notify();
     }
 }
@@ -312,12 +460,20 @@ impl MainView {
             .border_r_1()
             .border_color(hsla(p.border))
             .child(
-                div()
+                h_flex()
                     .px(space(2))
                     .py(space(1))
-                    .text_size(px(font::SMALL.size))
-                    .text_color(hsla(p.text_2))
-                    .child("프로필"),
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(font::SMALL.size))
+                            .text_color(hsla(p.text_2))
+                            .child("프로필"),
+                    )
+                    .child(
+                        button("new-profile", "새 프로필", true, false, p)
+                            .on_click(cx.listener(|v, _, _, cx| v.new_profile(cx))),
+                    ),
             )
             .children(rows)
     }
@@ -371,11 +527,27 @@ impl MainView {
                 .on_click(cx.listener(move |v, _, _, cx| v.set_tab(t, cx)))
                 .child(t.label())
         });
-        let body: AnyElement = if self.editing {
-            self.form.clone().into_any_element()
-        } else {
-            self.engine.clone().into_any_element()
+        let body: AnyElement = match self.editor() {
+            Some(editor) => editor.clone().into_any_element(),
+            None => self.engine.clone().into_any_element(),
         };
+        let progress = self.progress().cloned().map(|log| {
+            let ended = !log.read(cx).is_running();
+            v_flex()
+                .flex_none()
+                .max_h(px(metric::ROW * 12.))
+                .border_b_1()
+                .border_color(hsla(p.border))
+                .when(ended, |el| {
+                    el.child(
+                        h_flex().px(space(3)).pt(space(1)).justify_end().child(
+                            button("close-progress", "닫기", true, false, p)
+                                .on_click(cx.listener(|v, _, _, cx| v.close_progress(cx))),
+                        ),
+                    )
+                })
+                .child(log)
+        });
         v_flex()
             .flex_1()
             .min_w_0()
@@ -435,7 +607,11 @@ impl MainView {
                             .child(button("edit", "편집", a.edit, false, p).when(a.edit, |b| {
                                 b.on_click(cx.listener(|v, _, _, cx| v.edit(cx)))
                             }))
-                            .child(button("delete", "삭제", a.delete, false, p)),
+                            .child(
+                                button("delete", "삭제", a.delete, false, p).when(a.delete, |b| {
+                                    b.on_click(cx.listener(|v, _, _, cx| v.delete(cx)))
+                                }),
+                            ),
                     )
                     .when_some(self.error.clone(), |el, e| {
                         el.child(
@@ -451,13 +627,16 @@ impl MainView {
                         )
                     }),
             )
-            .child(
-                h_flex()
-                    .px(space(3))
-                    .border_b_1()
-                    .border_color(hsla(p.border))
-                    .children(tabs),
-            )
+            .children(progress)
+            .when(self.editor.is_none(), |el| {
+                el.child(
+                    h_flex()
+                        .px(space(3))
+                        .border_b_1()
+                        .border_color(hsla(p.border))
+                        .children(tabs),
+                )
+            })
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
     }
@@ -466,7 +645,18 @@ impl MainView {
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(window);
+        let overlay = self.delete_confirm().cloned().map(|confirm| {
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(hsla(p.bg_chrome).opacity(0.6))
+                .child(div().id("delete-confirm").occlude().child(confirm))
+        });
         v_flex()
+            .relative()
             .size_full()
             .bg(hsla(p.bg))
             .font_family(font::SANS)
@@ -492,6 +682,7 @@ impl Render for MainView {
                     .child(self.sidebar(p, cx))
                     .child(self.detail_pane(p, cx)),
             )
+            .children(overlay)
     }
 }
 

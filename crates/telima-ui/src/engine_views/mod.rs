@@ -25,20 +25,6 @@ const POLL: Duration = Duration::from_millis(50);
 /// Lines kept in the log viewer; older ones are dropped.
 const LOG_KEEP: usize = 5_000;
 
-/// Placeholder still created by the shell; [`EnginePanel`] replaces it once the shell wires it.
-#[derive(Default)]
-pub struct EngineViews;
-
-impl gpui_kit::Render for EngineViews {
-    fn render(
-        &mut self,
-        _: &mut gpui_kit::Window,
-        _: &mut Context<Self>,
-    ) -> impl gpui_kit::IntoElement {
-        gpui_kit::div()
-    }
-}
-
 /// State of one list. `Ready(vec![])` is the empty state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ListState<T> {

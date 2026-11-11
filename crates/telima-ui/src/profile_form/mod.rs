@@ -31,16 +31,5 @@ fn poll<V: 'static>(cx: &mut Context<V>, pump: fn(&mut V, &mut Context<V>)) -> T
     })
 }
 
-/// Empty edit slot still created by `shell::MainView::new`. The shell replaces it with a
-/// [`ProfileEditor`] (see the ui-forms handoff).
-#[derive(Default)]
-pub struct ProfileForm;
-
-impl Render for ProfileForm {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
-
 #[cfg(test)]
 mod tests;
