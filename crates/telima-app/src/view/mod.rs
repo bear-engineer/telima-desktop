@@ -369,20 +369,51 @@ fn refused_confirm(title: &str, body: String, label: &str) -> Confirm {
     }
 }
 
+/// Sums known sizes. Unknown sizes are never counted as 0 bytes (N8).
+fn sum_known_sizes(sizes: impl IntoIterator<Item = Option<u64>>) -> (u64, usize, usize) {
+    let (mut total, mut known, mut unknown) = (0u64, 0usize, 0usize);
+    for size in sizes {
+        match size {
+            Some(bytes) => {
+                total = total.saturating_add(bytes);
+                known += 1;
+            }
+            None => unknown += 1,
+        }
+    }
+    (total, known, unknown)
+}
+
+/// `"볼륨 N개, 1.2GB 삭제"`; the size part is dropped when no size is known, and
+/// `"1.2GB 이상"` marks a sum that leaves some sizes unknown (N8).
+fn volume_delete_label(sizes: impl IntoIterator<Item = Option<u64>>) -> String {
+    let (total, known, unknown) = sum_known_sizes(sizes);
+    let count = known + unknown;
+    if known == 0 {
+        return format!("볼륨 {count}개 삭제");
+    }
+    let size = format_bytes(total);
+    if unknown == 0 {
+        format!("볼륨 {count}개, {size} 삭제")
+    } else {
+        format!("볼륨 {count}개, {size} 이상 삭제")
+    }
+}
+
 pub fn confirm_delete_profile(
     name: &ProfileName,
     containers: usize,
-    volumes: usize,
-    volume_bytes: u64,
+    volume_sizes: &[Option<u64>],
 ) -> Confirm {
     Confirm {
         typed_name: Some(name.as_str().to_owned()),
         ..simple_confirm(
             "프로필 삭제",
             format!(
-                "VM 디스크, 컨테이너 {containers}개, 볼륨 {volumes}개가 함께 지워집니다. 되돌릴 수 없습니다."
+                "VM 디스크, 컨테이너 {containers}개, 볼륨 {}개가 함께 지워집니다. 되돌릴 수 없습니다.",
+                volume_sizes.len()
             ),
-            format!("볼륨 {volumes}개, {} 삭제", format_bytes(volume_bytes)),
+            volume_delete_label(volume_sizes.iter().copied()),
         )
     }
 }
@@ -412,12 +443,11 @@ pub fn confirm_prune_volumes(volumes: &[Volume]) -> Confirm {
             "볼륨 정리",
         );
     }
-    let bytes: u64 = volumes.iter().filter_map(|v| v.size_bytes).sum();
     let n = volumes.len();
     simple_confirm(
         "미사용 볼륨 정리",
         format!("미사용 볼륨 {n}개를 지웁니다. 되돌릴 수 없습니다."),
-        format!("볼륨 {n}개, {} 삭제", format_bytes(bytes)),
+        volume_delete_label(volumes.iter().map(|v| v.size_bytes)),
     )
 }
 

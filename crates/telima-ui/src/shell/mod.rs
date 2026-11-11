@@ -43,7 +43,7 @@ enum Msg {
     /// Stored spec for the inspector (VM 종류, 마운트); errors leave the values unknown.
     Config(ProfileName, Result<ProfileSpec, AppError>),
     /// What a delete would remove: container count, volume count, volume bytes.
-    DeleteFacts(ProfileName, usize, usize, u64),
+    DeleteFacts(ProfileName, usize, Vec<Option<u64>>),
 }
 
 type Inbox = Arc<Mutex<Vec<Msg>>>;
@@ -223,9 +223,9 @@ impl MainView {
                     self.configs.insert(name, spec);
                 }
                 Msg::Config(_, Err(_)) => {}
-                Msg::DeleteFacts(name, containers, volumes, bytes) => {
+                Msg::DeleteFacts(name, containers, volume_sizes) => {
                     if self.selected.as_ref() == Some(&name) && self.delete_confirm.is_none() {
-                        let copy = confirm_delete_profile(&name, containers, volumes, bytes);
+                        let copy = confirm_delete_profile(&name, containers, &volume_sizes);
                         let app = self.app.clone();
                         let confirm = cx.new(|cx| DeleteConfirm::new(app, name, copy, cx));
                         let sub = cx.subscribe(&confirm, |v, _, ev: &DeleteEvent, cx| {
@@ -365,13 +365,13 @@ impl MainView {
         self.app.containers(name, move |containers| {
             let containers = containers.map(|c| c.len()).unwrap_or(0);
             app.volumes(key.clone(), move |volumes| {
-                let (count, bytes) = volumes
-                    .map(|v| (v.len(), v.iter().filter_map(|v| v.size_bytes).sum()))
-                    .unwrap_or((0, 0));
+                let volume_sizes = volumes
+                    .map(|v| v.iter().map(|v| v.size_bytes).collect())
+                    .unwrap_or_default();
                 inbox
                     .lock()
                     .unwrap()
-                    .push(Msg::DeleteFacts(key, containers, count, bytes));
+                    .push(Msg::DeleteFacts(key, containers, volume_sizes));
             });
         });
         cx.notify();

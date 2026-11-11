@@ -151,7 +151,7 @@ fn edit_locks_immutable_fields_and_disk_only_grows(cx: &mut TestAppContext) {
 fn delete_is_disabled_until_the_typed_name_matches(cx: &mut TestAppContext) {
     let (vm, spawner, app) = setup(&[]);
     let name = ProfileName::parse("dev").unwrap();
-    let copy = confirm_delete_profile(&name, 2, 1, 1 << 30);
+    let copy = confirm_delete_profile(&name, 2, &[Some(1 << 30)]);
     let dialog = cx.new(|cx| DeleteConfirm::new(app, name, copy, cx));
 
     assert!(!dialog.read_with(cx, |d, _| d.can_delete()));
@@ -248,7 +248,7 @@ fn delete_dialog_takes_focus_on_open_and_escape_closes_it(cx: &mut TestAppContex
     // N3: no click first; the dialog must own focus so Escape reaches it.
     let (_, _, app) = setup(&[]);
     let name = ProfileName::parse("dev").unwrap();
-    let copy = confirm_delete_profile(&name, 0, 0, 0);
+    let copy = confirm_delete_profile(&name, 0, &[]);
     let (dialog, cx) = cx.add_window_view(|_, cx| DeleteConfirm::new(app, name, copy, cx));
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
