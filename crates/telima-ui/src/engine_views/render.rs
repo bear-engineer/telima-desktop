@@ -9,8 +9,7 @@ use telima_app::view::{ContainerRow, ImageRow, VolumeRow, short_image_id};
 
 use super::icons::{Icon, icon};
 use super::model::{
-    LineTone, StatusFilter, container_status, group_thousands, line_tone, row_actions,
-    split_timestamp, volume_chip,
+    LineTone, StatusFilter, container_status, group_thousands, row_actions, volume_chip,
 };
 use super::{Dialog, EnginePanel, ListState, LogPanel, copy};
 use crate::components::button::{ButtonVariant, button, icon_button};
@@ -216,6 +215,13 @@ impl EnginePanel {
                         .border_color(hsla(p.border_strong))
                         .bg(hsla(p.bg_raised))
                         .shadow_lg()
+                        .track_focus(&self.menu_focus)
+                        .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
+                            if ev.keystroke.key == "escape" {
+                                cx.stop_propagation();
+                                v.close_menu(cx);
+                            }
+                        }))
                         .on_mouse_down_out(cx.listener(|v, _, _, cx| v.close_menu(cx)))
                         .child({
                             let key = r.id.clone();
@@ -256,8 +262,7 @@ impl EnginePanel {
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> Div {
-        let actions = row_actions(r.state);
-        let (restart, more) = (r.id.clone(), r.id.clone());
+        let (start, stop, more) = (r.id.clone(), r.id.clone(), r.id.clone());
         let open = self.menu.as_deref() == Some(r.id.as_str());
         let key = r.id.clone();
         actions_slot()
@@ -267,16 +272,25 @@ impl EnginePanel {
             .when(!(selected || open), |a| {
                 a.invisible().group_hover(ROW_GROUP, |s| s.visible())
             })
-            // Start/stop need ContainerEngine::start/stop, which the core port lacks; until
-            // then the state-valid lifecycle action shown inline is restart.
-            .when(actions.restart, |a| {
+            // The state-valid lifecycle action (M3): 시작 or 중지, never both; 재시작 is in ⋯.
+            .when(r.can_start, |a| {
+                let key = r.id.clone();
                 a.child(
                     row_icon(
-                        SharedString::from(format!("restart-{}", r.id)),
-                        Icon::Restart,
+                        SharedString::from(format!("start-{}", r.id)),
+                        Icon::Start,
                         p,
                     )
-                    .on_click(cx.listener(move |v, _, _, cx| v.restart(&restart, cx))),
+                    .debug_selector(move || format!("ctr-start-{key}"))
+                    .on_click(cx.listener(move |v, _, _, cx| v.start(&start, cx))),
+                )
+            })
+            .when(r.can_stop, |a| {
+                let key = r.id.clone();
+                a.child(
+                    row_icon(SharedString::from(format!("stop-{}", r.id)), Icon::Stop, p)
+                        .debug_selector(move || format!("ctr-stop-{key}"))
+                        .on_click(cx.listener(move |v, _, _, cx| v.stop(&stop, cx))),
                 )
             })
             .child(
@@ -287,7 +301,11 @@ impl EnginePanel {
                                 let key = r.id.clone();
                                 move || format!("ctr-more-{key}")
                             })
-                            .on_click(cx.listener(move |v, _, _, cx| v.toggle_menu(&more, cx))),
+                            .on_click(cx.listener(move |v, _, window, cx| {
+                                v.toggle_menu(&more, cx);
+                                // Focus the menu so Escape closes it.
+                                window.focus(&v.menu_focus, cx);
+                            })),
                     )
                     .when(open, |d| d.child(self.row_menu(r, p, cx))),
             )
@@ -346,6 +364,8 @@ impl EnginePanel {
                         })
                         .child(r.status_text.clone()),
                 )
+                .child(col(4).child(mono(r.ports.clone(), p.text_2)))
+                .child(col(5).child(text(r.started.clone(), p.text_2)))
                 .child(self.row_actions_view(r, selected, p, cx))
         });
         v_flex()
@@ -516,11 +536,64 @@ impl EnginePanel {
         }
     }
 
-    fn log_panel(&self, log: &LogPanel, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    /// The 로그 검색 field (Containers.dc.html): Escape clears it, then closes the panel.
+    fn log_search(
+        &self,
+        log: &LogPanel,
+        window: &Window,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let focused = self.log_search_focus.is_focused(window);
+        let (value, color) = if log.query.is_empty() {
+            (copy::LOG_SEARCH.to_owned(), p.text_disabled)
+        } else {
+            (log.query.clone(), p.text)
+        };
+        div()
+            .id("log-search")
+            .debug_selector(|| "log-search".into())
+            .track_focus(&self.log_search_focus)
+            .flex_none()
+            .w(px(metric::FIELD_SELECT))
+            .h(px(metric::BTN_SM))
+            .px(space(1))
+            .gap(space(0))
+            .flex()
+            .items_center()
+            .rounded(px(metric::RADIUS_MD))
+            .border_1()
+            .border_color(hsla(if focused { p.focus } else { p.border_strong }))
+            .bg(hsla(p.bg_raised))
+            .child(icon(Icon::Search, hsla(p.text_2)))
+            .child(
+                small(value, color)
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap(),
+            )
+            .on_click(cx.listener(|v, _, window, cx| window.focus(&v.log_search_focus, cx)))
+            .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
+                let mut q = v.log_query().to_owned();
+                if edit_query(&mut q, ev) {
+                    cx.stop_propagation();
+                    v.set_log_query(q, cx);
+                }
+            }))
+    }
+
+    fn log_panel(
+        &self,
+        log: &LogPanel,
+        window: &Window,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (follow, show_time) = (log.follow, log.show_time);
-        let lines = log.lines.iter().map(|l| {
-            let (ts, msg) = split_timestamp(&l.text);
-            let color = match line_tone(msg) {
+        let rows = self.log_rows();
+        let lines = rows.iter().map(|l| {
+            let color = match l.tone {
                 LineTone::Error => p.err,
                 LineTone::Normal => p.text,
             };
@@ -534,7 +607,7 @@ impl EnginePanel {
                         div()
                             .flex_none()
                             .text_color(hsla(p.text_2))
-                            .child(ts.unwrap_or_default()),
+                            .child(l.time.clone()),
                     )
                 })
                 .child(
@@ -545,7 +618,7 @@ impl EnginePanel {
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .text_color(hsla(color))
-                        .child(msg.to_owned()),
+                        .child(l.text.to_owned()),
                 )
         });
         let entity = cx.entity().downgrade();
@@ -603,6 +676,7 @@ impl EnginePanel {
                             .whitespace_nowrap()
                             .text_ellipsis(),
                     )
+                    .child(self.log_search(log, window, p, cx))
                     .child(
                         h_flex()
                             .flex_none()
@@ -686,7 +760,7 @@ impl EnginePanel {
             )
             .with_animation(
                 SharedString::from(format!("log-open-{}", log.container)),
-                Animation::new(motion::BASE).with_easing(motion::ease_out),
+                log_open_animation(),
                 |el, t| el.opacity(t),
             )
             .into_any_element()
@@ -771,6 +845,11 @@ impl EnginePanel {
     }
 }
 
+/// How the log panel opens: the motion tokens, never literal timings (M13).
+pub(super) fn log_open_animation() -> Animation {
+    Animation::new(motion::BASE).with_easing(motion::ease_out)
+}
+
 /// Typing into the filter field: printable characters and backspace.
 fn edit_query(value: &mut String, ev: &KeyDownEvent) -> bool {
     let k = &ev.keystroke;
@@ -818,7 +897,7 @@ impl Render for EnginePanel {
                     .overflow_y_scroll()
                     .child(table),
             )
-            .when_some(log, |d, log| d.child(self.log_panel(&log, p, cx)))
+            .when_some(log, |d, log| d.child(self.log_panel(&log, window, p, cx)))
             .when_some(dialog, |d, dlg| d.child(self.dialog_view(&dlg, p, cx)))
     }
 }

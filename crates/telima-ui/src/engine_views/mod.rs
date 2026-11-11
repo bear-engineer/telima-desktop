@@ -25,8 +25,8 @@ mod model;
 mod render;
 
 pub use model::{
-    FilterCounts, LineTone, RowActions, StatusFilter, container_status, filter_rows, line_tone,
-    row_actions, split_timestamp, volume_chip,
+    FilterCounts, LineTone, LogRow, RowActions, StatusFilter, container_status, filter_rows,
+    line_tone, log_rows, row_actions, split_timestamp, volume_chip,
 };
 
 /// How often the view drains finished use-case results.
@@ -76,6 +76,8 @@ pub struct LogPanel {
     pub follow: bool,
     /// The 시각 switch: show the timestamp column.
     pub show_time: bool,
+    /// The 로그 검색 query; blank shows every line.
+    pub query: String,
     pub lines: Vec<LogLine>,
     pub error: Option<String>,
     stream: u64,
@@ -117,6 +119,10 @@ pub struct EnginePanel {
     focus: FocusHandle,
     /// Keyboard focus of the log panel, so Escape closes it (N6).
     log_focus: FocusHandle,
+    /// Keyboard focus of the 로그 검색 field.
+    log_search_focus: FocusHandle,
+    /// Keyboard focus of the open ⋯ menu, so Escape closes it.
+    menu_focus: FocusHandle,
     log: Option<LogPanel>,
     log_job: Option<Job>,
     streams: u64,
@@ -150,6 +156,8 @@ impl EnginePanel {
             menu: None,
             focus: cx.focus_handle(),
             log_focus: cx.focus_handle(),
+            log_search_focus: cx.focus_handle(),
+            menu_focus: cx.focus_handle(),
             log: None,
             log_job: None,
             streams: 0,
@@ -413,6 +421,28 @@ impl EnginePanel {
         }
     }
 
+    pub fn start(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(profile) = self.profile.clone() else {
+            return;
+        };
+        let send = self.sender();
+        self.app.start_container(profile, id.to_owned(), move |r| {
+            send(Msg::Done(Tab::Containers, r))
+        });
+        cx.notify();
+    }
+
+    pub fn stop(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(profile) = self.profile.clone() else {
+            return;
+        };
+        let send = self.sender();
+        self.app.stop_container(profile, id.to_owned(), move |r| {
+            send(Msg::Done(Tab::Containers, r))
+        });
+        cx.notify();
+    }
+
     pub fn restart(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(profile) = self.profile.clone() else {
             return;
@@ -529,6 +559,25 @@ impl EnginePanel {
         cx.notify();
     }
 
+    /// The 로그 검색 query of the open log panel.
+    pub fn log_query(&self) -> &str {
+        self.log.as_ref().map_or("", |l| l.query.as_str())
+    }
+
+    pub fn set_log_query(&mut self, query: String, cx: &mut Context<Self>) {
+        if let Some(log) = self.log.as_mut() {
+            log.query = query;
+        }
+        cx.notify();
+    }
+
+    /// Log lines matching the query, with 시각 in the viewer's local offset.
+    pub fn log_rows(&self) -> Vec<LogRow<'_>> {
+        self.log
+            .as_ref()
+            .map_or_else(Vec::new, |l| log_rows(&l.lines, &l.query, utc_offset()))
+    }
+
     /// Turns follow on or off; the stream restarts from the start of the log.
     pub fn set_follow(&mut self, follow: bool, cx: &mut Context<Self>) {
         let Some(log) = self.log.as_ref() else {
@@ -558,6 +607,12 @@ impl EnginePanel {
         cx: &mut Context<Self>,
     ) {
         let show_time = self.log.as_ref().is_none_or(|l| l.show_time);
+        let query = self
+            .log
+            .as_ref()
+            .filter(|l| l.container == id)
+            .map(|l| l.query.clone())
+            .unwrap_or_default();
         self.close_logs(cx);
         let Some(profile) = self.profile.clone() else {
             return;
@@ -570,6 +625,7 @@ impl EnginePanel {
             image,
             follow,
             show_time,
+            query,
             lines: Vec::new(),
             error: None,
             stream,
@@ -596,4 +652,32 @@ fn now() -> telima_core::time::UnixMillis {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     telima_core::time::UnixMillis(ms)
+}
+
+/// The viewer's UTC offset in seconds for log 시각, read once from `date +%z` (std has no
+/// local-time API and the workspace takes no tz crate). Falls back to UTC (0) if `date` fails.
+fn utc_offset() -> i32 {
+    static OFFSET: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        std::process::Command::new("date")
+            .arg("+%z")
+            .output()
+            .ok()
+            .and_then(|o| parse_utc_offset(String::from_utf8_lossy(&o.stdout).trim()))
+            .unwrap_or(0)
+    })
+}
+
+/// `+0900` -> 32400, `-0330` -> -12600.
+fn parse_utc_offset(s: &str) -> Option<i32> {
+    let (sign, digits) = match s.as_bytes().first()? {
+        b'+' => (1, &s[1..]),
+        b'-' => (-1, &s[1..]),
+        _ => return None,
+    };
+    if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (h, m): (i32, i32) = (digits[..2].parse().ok()?, digits[2..].parse().ok()?);
+    Some(sign * (h * 3600 + m * 60))
 }

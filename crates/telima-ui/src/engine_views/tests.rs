@@ -589,24 +589,16 @@ fn start_and_stop_call_the_use_cases(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn row_icon_actions_are_valid_for_the_state(cx: &mut TestAppContext) {
     let (view, cx) = long_image_panel(cx);
-    view.update(cx, |v, cx| v.select("c2", cx));
-    cx.run_until_parked();
-    assert!(
-        cx.debug_bounds("ctr-stop-c1").is_some(),
-        "running row lacks 중지"
-    );
-    assert!(
-        cx.debug_bounds("ctr-start-c1").is_none(),
-        "running row offers 시작"
-    );
-    assert!(
-        cx.debug_bounds("ctr-start-c2").is_some(),
-        "exited row lacks 시작"
-    );
-    assert!(
-        cx.debug_bounds("ctr-stop-c2").is_none(),
-        "exited row offers 중지"
-    );
+    // Actions of an unselected row are hidden, so check each row while it is selected.
+    for (id, start, stop) in [("c1", false, true), ("c2", true, false)] {
+        view.update(cx, |v, cx| v.select(id, cx));
+        cx.run_until_parked();
+        let shown = |cx: &mut VisualTestContext, what: &str| {
+            cx.debug_bounds(sel(format!("ctr-{what}-{id}"))).is_some()
+        };
+        assert_eq!(shown(cx, "start"), start, "시작 on {id}");
+        assert_eq!(shown(cx, "stop"), stop, "중지 on {id}");
+    }
 }
 
 /// M4: the 포트/시작 cells show the row data.

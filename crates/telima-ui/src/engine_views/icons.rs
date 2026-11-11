@@ -13,7 +13,6 @@ const BOX: f32 = 16.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
-    Restart,
     More,
     Trash,
     Refresh,
@@ -21,6 +20,9 @@ pub enum Icon {
     Filter,
     Terminal,
     Follow,
+    Start,
+    Stop,
+    Search,
 }
 
 type Seg = &'static [(f32, f32)];
@@ -55,12 +57,23 @@ fn strokes(icon: Icon) -> Vec<Vec<(f32, f32)>> {
             &[(5., 6.5), (7., 8.), (5., 9.5)],
             &[(8.5, 10.), (11., 10.)],
         ]),
+        Icon::Start => lines(&[&[(5., 3.5), (12.5, 8.), (5., 12.5), (5., 3.5)]]),
+        Icon::Stop => lines(&[&[(4., 4.), (12., 4.), (12., 12.), (4., 12.), (4., 4.)]]),
+        Icon::Search => {
+            let ring = (0..=24)
+                .map(|i| {
+                    let a = i as f32 / 24. * TAU;
+                    (7. + 3.75 * a.cos(), 7. + 3.75 * a.sin())
+                })
+                .collect();
+            vec![ring, vec![(10., 10.), (13., 13.)]]
+        }
         Icon::Follow => lines(&[
             &[(8., 3.), (8., 11.)],
             &[(4.5, 7.5), (8., 11.), (11.5, 7.5)],
             &[(3.5, 13.), (12.5, 13.)],
         ]),
-        Icon::Refresh | Icon::Restart => {
+        Icon::Refresh => {
             // Three-quarter ring from the canvas path `M13 8a5 5 0 1 1-1.46-3.54`, plus its arrow head.
             let ring = (0..=24)
                 .map(|i| {

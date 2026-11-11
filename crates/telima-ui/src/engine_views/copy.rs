@@ -18,6 +18,7 @@ pub const MENU_REMOVE: &str = "삭제";
 pub const CANCEL: &str = "취소";
 pub const LOG_TIME: &str = "시각";
 pub const LOG_FOLLOW: &str = "따라가기";
+pub const LOG_SEARCH: &str = "로그 검색";
 pub const LOG_EMPTY: &str = "로그가 없습니다.";
 pub const LOG_FOLLOWING: &str = "따라가는 중 · 새 줄이 오면 맨 아래로 이동";
 pub const LOG_PAUSED: &str = "따라가기 꺼짐 · 지금까지의 로그";
@@ -45,14 +46,15 @@ pub fn confirm_remove_exited(n: usize) -> Confirm {
 }
 
 /// Column headers of the containers table: (label, share of the row width). Shares sum to
-/// 1.0 so the cells fill the row up to the actions slot (N7). 포트/시작 (Containers.dc.html)
-/// stay hidden until `ContainerRow` carries port and start data: a column of "—" on every
-/// row only squeezes 상태.
-pub const CONTAINER_COLS: [(&str, f32); 4] = [
-    ("이름", 0.26),
-    ("ID", 0.16),
-    ("이미지", 0.28),
-    ("상태", 0.3),
+/// 1.0 so the cells fill the row up to the actions slot (N7); 상태 keeps room for
+/// "실행 중 · 2시간" (Containers.dc.html, M4).
+pub const CONTAINER_COLS: [(&str, f32); 6] = [
+    ("이름", 0.18),
+    ("ID", 0.12),
+    ("이미지", 0.2),
+    ("상태", 0.22),
+    ("포트", 0.16),
+    ("시작", 0.12),
 ];
 pub const IMAGE_COLS: [(&str, f32); 4] = [
     ("태그", 0.4),

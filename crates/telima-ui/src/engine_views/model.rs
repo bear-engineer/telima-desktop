@@ -1,7 +1,9 @@
 //! Pure view logic of the engine panel: filter, row actions, status shapes, volume chips and
 //! log line parsing. Kept free of GPUI so it is unit-tested directly.
+use telima_app::view::daily::filter_log;
+use telima_app::view::time_text::log_time_text;
 use telima_app::view::{ChipKind, ContainerRow, VolumeRow};
-use telima_core::container::ContainerState;
+use telima_core::container::{ContainerState, LogLine};
 
 use crate::components::status::Status;
 
@@ -192,6 +194,26 @@ pub fn split_timestamp(text: &str) -> (Option<String>, &str) {
         .take(3)
         .collect();
     (Some(format!("{}.{frac}", &stamp[11..19])), rest)
+}
+
+/// One drawn log line: its 시각 text in the viewer's offset, the message and its tone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogRow<'a> {
+    pub time: String,
+    pub text: &'a str,
+    pub tone: LineTone,
+}
+
+/// Lines matching the 로그 검색 query (telima-app filter), with their timestamps formatted.
+pub fn log_rows<'a>(lines: &'a [LogLine], query: &str, utc_offset_secs: i32) -> Vec<LogRow<'a>> {
+    filter_log(lines, query)
+        .into_iter()
+        .map(|l| LogRow {
+            time: log_time_text(l.timestamp, utc_offset_secs),
+            text: &l.text,
+            tone: line_tone(&l.text),
+        })
+        .collect()
 }
 
 /// `1204` -> `1,204`.
