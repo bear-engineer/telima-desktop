@@ -731,7 +731,11 @@ mod tests {
 
     #[test]
     fn delete_profile_confirm_copy_lists_what_is_lost() {
-        let c = confirm_delete_profile(&name("dev"), 6, 3, 1_200_000_000);
+        let c = confirm_delete_profile(
+            &name("dev"),
+            6,
+            &[Some(600_000_000), Some(600_000_000), Some(0)],
+        );
         assert_eq!(c.title, "프로필 삭제");
         assert_eq!(
             c.body,
@@ -740,6 +744,29 @@ mod tests {
         assert_eq!(c.confirm_label, "볼륨 3개, 1.2GB 삭제");
         assert_eq!(c.typed_name.as_deref(), Some("dev"));
         assert!(c.can_confirm);
+    }
+
+    #[test]
+    fn delete_profile_confirm_omits_size_when_every_volume_size_is_unknown() {
+        // N8: unknown sizes must not be summed as 0B.
+        let c = confirm_delete_profile(&name("dev"), 0, &[None; 13]);
+        assert_eq!(c.confirm_label, "볼륨 13개 삭제");
+    }
+
+    #[test]
+    fn delete_profile_confirm_marks_partial_size_as_lower_bound() {
+        let c = confirm_delete_profile(
+            &name("dev"),
+            0,
+            &[Some(600_000_000), None, Some(600_000_000), None],
+        );
+        assert_eq!(c.confirm_label, "볼륨 4개, 1.2GB 이상 삭제");
+    }
+
+    #[test]
+    fn delete_profile_confirm_with_no_volumes_omits_size() {
+        let c = confirm_delete_profile(&name("dev"), 0, &[]);
+        assert_eq!(c.confirm_label, "볼륨 0개 삭제");
     }
 
     #[test]
@@ -767,9 +794,19 @@ mod tests {
             },
         ];
         let c = confirm_prune_volumes(&vols);
-        assert_eq!(c.confirm_label, "볼륨 2개, 1.2GB 삭제");
+        assert_eq!(c.confirm_label, "볼륨 2개, 1.2GB 이상 삭제");
         assert!(c.can_confirm);
         assert!(!confirm_prune_volumes(&[]).can_confirm);
+
+        let all_unknown = vec![Volume {
+            name: "c".into(),
+            size_bytes: None,
+            ref_count: Some(0),
+        }];
+        assert_eq!(
+            confirm_prune_volumes(&all_unknown).confirm_label,
+            "볼륨 1개 삭제"
+        );
 
         let imgs = vec![Image {
             id: "sha256:b".into(),
