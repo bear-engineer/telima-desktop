@@ -10,7 +10,7 @@ use telima_core::container::{Container, ContainerState, Image, Volume};
 use telima_core::ports::PortError;
 use telima_core::profile::{HostOs, ProfileName};
 
-use super::{EnginePanel, ListState};
+use super::{EnginePanel, ListState, StatusFilter};
 use crate::shell::Tab;
 
 #[derive(Default)]
@@ -267,7 +267,7 @@ fn volumes_mark_in_use_and_prune_preview_lists_only_unused(cx: &mut TestAppConte
         [
             ("pgdata".to_string(), true),
             ("stale".to_string(), false),
-            ("unknown".to_string(), true),
+            ("unknown".to_string(), false),
         ]
     );
     f.view.update(cx, |v, cx| v.request_volume_prune(cx));
@@ -309,4 +309,86 @@ fn empty_list_is_ready_with_no_rows(cx: &mut TestAppContext) {
         |v, _| matches!(v.containers(), ListState::Ready(r) if r.is_empty()),
     );
     assert!(empty);
+}
+
+#[gpui_kit::test]
+fn filter_query_and_status_group_narrow_the_visible_rows(cx: &mut TestAppContext) {
+    let f = fixture(cx, Tab::Containers);
+    f.settle(cx);
+    let visible = |cx: &mut TestAppContext| {
+        f.view.read_with(cx, |v, _| {
+            v.visible_containers()
+                .into_iter()
+                .map(|r| r.name)
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(visible(cx), ["pg-main", "old-job"]);
+    f.view
+        .update(cx, |v, cx| v.set_status_filter(StatusFilter::Exited, cx));
+    assert_eq!(visible(cx), ["old-job"]);
+    f.view.update(cx, |v, cx| {
+        v.set_status_filter(StatusFilter::All, cx);
+        v.set_query("PG".into(), cx);
+    });
+    assert_eq!(visible(cx), ["pg-main"]);
+}
+
+#[gpui_kit::test]
+fn removing_exited_containers_confirms_then_removes_each(cx: &mut TestAppContext) {
+    let f = fixture(cx, Tab::Containers);
+    f.settle(cx);
+    f.view.update(cx, |v, cx| v.request_remove_exited(cx));
+    let items = f
+        .view
+        .read_with(cx, |v, _| v.dialog().map(|d| d.items.clone()))
+        .unwrap();
+    assert_eq!(items, ["old-job"]);
+    assert!(!f.engine.calls().iter().any(|c| c.starts_with("remove")));
+    f.view.update(cx, |v, cx| v.accept(cx));
+    f.settle(cx);
+    assert!(
+        f.engine
+            .calls()
+            .contains(&"remove c2 force=false".to_string())
+    );
+    assert!(!f.engine.calls().iter().any(|c| c.starts_with("remove c1")));
+}
+
+#[gpui_kit::test]
+fn list_errors_are_korean_not_debug_text(cx: &mut TestAppContext) {
+    let f = fixture(cx, Tab::Containers);
+    f.fail.store(true, Ordering::SeqCst);
+    f.settle(cx);
+    let msg = f.view.read_with(cx, |v, _| match v.containers() {
+        ListState::Failed(m) => m.clone(),
+        _ => String::new(),
+    });
+    assert!(msg.contains("연결할 수 없습니다"), "{msg}");
+    assert!(!msg.contains("unavailable") && !msg.contains("docker.sock"));
+}
+
+#[gpui_kit::test]
+fn selecting_a_row_keeps_its_actions_visible(cx: &mut TestAppContext) {
+    let f = fixture(cx, Tab::Containers);
+    f.settle(cx);
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.selected().map(str::to_owned)),
+        None
+    );
+    f.view.update(cx, |v, cx| v.select("c1", cx));
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.selected().map(str::to_owned)),
+        Some("c1".to_string())
+    );
+    f.view.update(cx, |v, cx| v.toggle_menu("c1", cx));
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.menu().map(str::to_owned)),
+        Some("c1".to_string())
+    );
+    f.view.update(cx, |v, cx| v.toggle_menu("c1", cx));
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.menu().map(str::to_owned)),
+        None
+    );
 }

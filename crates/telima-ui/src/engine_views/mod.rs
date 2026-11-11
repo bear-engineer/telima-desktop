@@ -18,7 +18,13 @@ use telima_core::profile::ProfileName;
 
 use crate::shell::Tab;
 
+mod model;
 mod render;
+
+pub use model::{
+    FilterCounts, LineTone, RowActions, StatusFilter, container_status, filter_rows, line_tone,
+    row_actions, split_timestamp, volume_chip,
+};
 
 /// How often the view drains finished use-case results.
 const POLL: Duration = Duration::from_millis(50);
@@ -280,6 +286,44 @@ impl EnginePanel {
                 }
             }
         }
+    }
+
+    /// Container rows after the toolbar filter.
+    pub fn visible_containers(&self) -> Vec<ContainerRow> {
+        unimplemented!()
+    }
+
+    pub fn set_status_filter(&mut self, filter: StatusFilter, cx: &mut Context<Self>) {
+        let _ = (filter, cx);
+        unimplemented!()
+    }
+
+    pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
+        let _ = (query, cx);
+        unimplemented!()
+    }
+
+    pub fn selected(&self) -> Option<&str> {
+        unimplemented!()
+    }
+
+    pub fn select(&mut self, id: &str, cx: &mut Context<Self>) {
+        let _ = (id, cx);
+        unimplemented!()
+    }
+
+    pub fn menu(&self) -> Option<&str> {
+        unimplemented!()
+    }
+
+    pub fn toggle_menu(&mut self, id: &str, cx: &mut Context<Self>) {
+        let _ = (id, cx);
+        unimplemented!()
+    }
+
+    pub fn request_remove_exited(&mut self, cx: &mut Context<Self>) {
+        let _ = cx;
+        unimplemented!()
     }
 
     fn container(&self, id: &str) -> Option<&ContainerRow> {
