@@ -274,7 +274,10 @@ impl MainView {
                             telima_core::profile::DeleteOptions::default(),
                         );
                         let app = self.app.clone();
-                        let confirm = cx.new(|cx| DeleteConfirm::new(app, name, copy, cx));
+                        let confirm = cx.new(|cx| {
+                            DeleteConfirm::new(app, name, copy, cx)
+                                .with_facts(containers, volume_sizes.clone())
+                        });
                         let sub = cx.subscribe(&confirm, |v, _, ev: &DeleteEvent, cx| {
                             v.delete_confirm = None;
                             if let DeleteEvent::Deleted(_) = ev {
