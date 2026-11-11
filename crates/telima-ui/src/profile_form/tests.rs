@@ -96,7 +96,9 @@ fn invalid_spec_shows_a_violation_and_does_not_call_create(cx: &mut TestAppConte
 fn create_offers_only_the_rule_options_for_the_host(cx: &mut TestAppContext) {
     let (_, _, app) = setup(&[]);
     let form = cx.new(|cx| ProfileEditor::create(app, HostOs::Linux, cx));
-    let (vms, mounts) = form.read_with(cx, |f, _| (f.vm_options().to_vec(), f.mount_options().to_vec()));
+    let (vms, mounts) = form.read_with(cx, |f, _| {
+        (f.vm_options().to_vec(), f.mount_options().to_vec())
+    });
     assert_eq!(vms, [VmType::Qemu]);
     assert!(!mounts.contains(&MountType::Virtiofs));
     assert!(!form.read_with(cx, |f, _| f.rosetta_available()));
@@ -105,6 +107,7 @@ fn create_offers_only_the_rule_options_for_the_host(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn edit_locks_immutable_fields_and_disk_only_grows(cx: &mut TestAppContext) {
     let (vm, spawner, app) = setup(&[]);
+    vm.specs.lock().unwrap().push(spec("dev"));
     let form = cx.new(|cx| ProfileEditor::edit(app, HostOs::MacOs, spec("dev"), cx));
 
     form.read_with(cx, |f, _| {
@@ -127,7 +130,10 @@ fn edit_locks_immutable_fields_and_disk_only_grows(cx: &mut TestAppContext) {
     });
     spawner.run_all();
     form.update(cx, |f, cx| f.pump(cx));
-    assert_eq!(form.read_with(cx, |f, _| f.violations_for(Field::Disk).len()), 1);
+    assert_eq!(
+        form.read_with(cx, |f, _| f.violations_for(Field::Disk).len()),
+        1
+    );
     assert!(!vm.calls().iter().any(|c| c.starts_with("update")));
 
     form.update(cx, |f, cx| {
