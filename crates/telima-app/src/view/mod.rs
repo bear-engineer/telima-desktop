@@ -1,6 +1,13 @@
 //! View models: plain data the UI renders, built from use-case results. No GPUI types here.
 //! Korean labels follow the canvas (design/canvas-v1). Pure functions, synchronous tests.
 
+pub mod docker_status;
+pub mod notice;
+pub mod start_steps;
+
+pub use notice::{error_text, notice, Notice, NoticeKind};
+pub use start_steps::{start_progress, start_step_of, StartProgress, StepState, START_STEPS};
+
 use telima_core::container::{Container, ContainerState, Image, Volume};
 use telima_core::profile::{
     MountType, Profile, ProfileName, ProfileSpec, ProfileStatus, Runtime, VmType,
@@ -232,12 +239,19 @@ pub fn container_rows(containers: &[Container]) -> Vec<ContainerRow> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageRow {
     pub id: String,
+    /// Short id for display: 12 hex chars, no `sha256:` prefix.
+    pub short_id: String,
     /// Comma-separated tags, `<none>` when there are none.
     pub tags: String,
     pub size: String,
     /// `2개`, or `—` when the engine did not report usage.
     pub containers: String,
     pub dangling: bool,
+}
+
+/// `sha256:4611d0a1b2c3...` -> `4611d0a1b2c3`. Ids without the prefix keep their hex.
+pub fn short_image_id(id: &str) -> String {
+    id.chars().take(12).collect()
 }
 
 pub fn image_rows(images: &[Image]) -> Vec<ImageRow> {
@@ -253,6 +267,7 @@ pub fn image_rows(images: &[Image]) -> Vec<ImageRow> {
             let dangling = img.is_dangling();
             ImageRow {
                 id: img.id.clone(),
+                short_id: short_image_id(&img.id),
                 tags: if dangling {
                     "<none>".to_owned()
                 } else {
@@ -266,11 +281,28 @@ pub fn image_rows(images: &[Image]) -> Vec<ImageRow> {
         .collect()
 }
 
+/// Chip colour kind for a usage badge (the UI maps it to tokens).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipKind {
+    Ok,
+    Idle,
+}
+
+/// Whether a volume is referenced: known in use, known unused, or the engine did not say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeUsage {
+    InUse,
+    Unused,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VolumeRow {
     pub name: String,
     pub size: String,
-    /// Unknown reference counts count as in use, as the domain rule says.
+    pub usage: VolumeUsage,
+    pub chip: ChipKind,
+    /// True only for `VolumeUsage::InUse`.
     pub in_use: bool,
     pub in_use_label: &'static str,
 }
@@ -281,12 +313,10 @@ pub fn volume_rows(volumes: &[Volume]) -> Vec<VolumeRow> {
         .map(|v| VolumeRow {
             name: v.name.clone(),
             size: v.size_bytes.map_or("—".to_owned(), format_bytes),
-            in_use: !v.is_unused(),
-            in_use_label: match v.ref_count {
-                Some(0) => "미사용",
-                Some(_) => "사용 중",
-                None => "확인 불가",
-            },
+            usage: VolumeUsage::InUse,
+            chip: ChipKind::Ok,
+            in_use: true,
+            in_use_label: "사용 중",
         })
         .collect()
 }
@@ -562,9 +592,9 @@ mod tests {
             status_text: text.into(),
         };
         let rows = container_rows(&[
-            c(ContainerState::Running, "실행 중 · 3시간"),
-            c(ContainerState::Exited, "종료됨 · 코드 0"),
-            c(ContainerState::Dead, "오류 · 종료 코드 1"),
+            c(ContainerState::Running, "Up 3 hours"),
+            c(ContainerState::Exited, "Exited (0) 4 hours ago"),
+            c(ContainerState::Dead, "Dead"),
         ]);
         assert_eq!(rows[0].state_label, "실행 중");
         assert_eq!(rows[1].state_label, "종료됨");
@@ -572,6 +602,8 @@ mod tests {
         assert_eq!(rows[0].name, "pg-main");
         assert_eq!(rows[0].image, "postgres:17");
         assert_eq!(rows[0].status_text, "실행 중 · 3시간");
+        assert_eq!(rows[1].status_text, "종료됨 · 코드 0");
+        assert_eq!(rows[2].status_text, "오류");
         assert_eq!(rows[0].state, ContainerState::Running);
     }
 
@@ -631,6 +663,22 @@ mod tests {
     }
 
     #[test]
+    fn short_image_id_drops_prefix_and_keeps_12_hex() {
+        assert_eq!(
+            short_image_id("sha256:4611d0a1b2c3d4e5f6a7b8c9d0e1f2a3"),
+            "4611d0a1b2c3"
+        );
+        assert_eq!(short_image_id("abc"), "abc");
+        let rows = image_rows(&[Image {
+            id: "sha256:4611d0a1b2c3d4e5f6a7b8c9d0e1f2a3".into(),
+            tags: vec!["alpine:3".into()],
+            size_bytes: 1,
+            containers: None,
+        }]);
+        assert_eq!(rows[0].short_id, "4611d0a1b2c3");
+    }
+
+    #[test]
     fn volume_rows_flag_in_use_and_unknown_counts() {
         let vols = vec![
             Volume {
@@ -650,11 +698,17 @@ mod tests {
             },
         ];
         let rows = volume_rows(&vols);
+        assert_eq!(rows[0].usage, VolumeUsage::InUse);
+        assert_eq!(rows[0].chip, ChipKind::Ok);
         assert_eq!((rows[0].in_use, rows[0].in_use_label), (true, "사용 중"));
         assert_eq!(rows[0].size, "1.2GB");
+        assert_eq!(rows[1].usage, VolumeUsage::Unused);
+        assert_eq!(rows[1].chip, ChipKind::Idle);
         assert_eq!((rows[1].in_use, rows[1].in_use_label), (false, "미사용"));
         assert_eq!(rows[1].size, "—");
-        assert_eq!((rows[2].in_use, rows[2].in_use_label), (true, "확인 불가"));
+        assert_eq!(rows[2].usage, VolumeUsage::Unknown);
+        assert_eq!(rows[2].chip, ChipKind::Idle);
+        assert_eq!((rows[2].in_use, rows[2].in_use_label), (false, "확인 불가"));
     }
 
     #[test]
