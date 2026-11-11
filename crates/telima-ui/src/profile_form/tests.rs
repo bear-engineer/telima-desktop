@@ -2,7 +2,7 @@
 use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
-use gpui_kit::{AppContext, Entity, Modifiers, TestAppContext};
+use gpui_kit::{AppContext, Entity, Modifiers, TestAppContext, px, size};
 use telima_app::profiles::Lifecycle;
 use telima_app::runtime::{App, BoxFuture, DynEngine, Spawner};
 use telima_app::testing::{FakeEngine, FakeVm};
@@ -10,6 +10,7 @@ use telima_app::view::confirm_delete_profile;
 use telima_core::profile::{HostOs, MountType, ProfileName, ProfileSpec, Runtime, VmType};
 
 use super::progress::CURRENT_STEP_FILL;
+use crate::theme::metric;
 use super::{DeleteConfirm, DeleteEvent, Field, ProfileEditor, StartProgress};
 
 #[derive(Default)]
@@ -315,4 +316,28 @@ fn profile_form_draws_the_error_triangle_shape_not_a_glyph() {
     ] {
         assert!(!src.contains('\u{25B2}'), "{file} still draws the ▲ glyph");
     }
+}
+
+/// L7: the inline create form is capped at the old 420 dialog width even in a wide window, and
+/// its buttons sit at the form's right edge, not the window's.
+#[gpui_kit::test]
+fn inline_form_is_capped_and_buttons_sit_at_its_right_edge(cx: &mut TestAppContext) {
+    let (_, _, app) = setup(&[]);
+    let (_, cx) = cx.add_window_view(|_, cx| ProfileEditor::create(app, HostOs::MacOs, cx));
+    cx.simulate_resize(size(px(metric::WINDOW_W), px(metric::WINDOW_H)));
+    cx.run_until_parked();
+    let frame = cx.debug_bounds("profile-form-frame").expect("form rendered");
+    let cancel = cx.debug_bounds("form-cancel").expect("cancel rendered");
+    let submit = cx.debug_bounds("form-submit").expect("submit rendered");
+    assert!(
+        frame.size.width <= px(metric::DIALOG_W),
+        "form {frame:?} wider than {}",
+        metric::DIALOG_W
+    );
+    assert!(submit.right() <= frame.right(), "submit outside form");
+    assert!(cancel.left() >= frame.left(), "cancel outside form");
+    assert!(
+        frame.right() - submit.right() < px(metric::BTN_PAD_X * 4.0),
+        "buttons not right-aligned to the form: frame {frame:?}, submit {submit:?}"
+    );
 }

@@ -754,12 +754,14 @@ impl Render for ProfileEditor {
             .justify_end()
             .child(
                 button("form-cancel", "취소", !self.saving, Tone::Default, p)
+                    .debug_selector(|| "form-cancel".to_string())
                     .when(!self.saving, |b| {
                         b.on_click(cx.listener(|v, _, _, cx| v.cancel(cx)))
                     }),
             )
             .child(
                 button("form-submit", submit_label, !self.saving, Tone::Primary, p)
+                    .debug_selector(|| "form-submit".to_string())
                     .when(!self.saving, |b| {
                         b.on_click(cx.listener(|v, _, _, cx| v.submit(cx)))
                     }),
@@ -768,6 +770,7 @@ impl Render for ProfileEditor {
         // N4: inline in the shell's space(4) inset, no frame; the shell crumb (create) or
         // profile header (edit) is the only title.
         let frame = v_flex()
+            .debug_selector(|| "profile-form-frame".to_string())
             .gap(space(2))
             .text_color(hsla(p.text))
             .font_family(font::SANS)
