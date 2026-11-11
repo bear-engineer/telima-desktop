@@ -10,17 +10,25 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use telima_app::AppError;
-use telima_app::profiles::Lifecycle;
+use telima_app::profiles::{Lifecycle, VersionCheck};
 use telima_app::runtime::App as Telima;
-use telima_app::view::notice::{NoticeKind, error_text, notice};
-use telima_app::view::{
-    ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile, profile_detail, profile_rows,
+use telima_app::view::daily::{
+    MountRow, VersionFooter, VersionNotice, VersionNoticeSeverity, confirm_prune_cache, mount_rows,
+    version_footer, version_notice,
 };
-use telima_core::profile::{Profile, ProfileName, ProfileSpec};
+use telima_app::view::notice::{NoticeKind, error_text, notice};
+use telima_app::view::time_text::uptime_label;
+use telima_app::view::{
+    Confirm, ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile, profile_detail,
+    profile_rows,
+};
+use telima_core::profile::{Profile, ProfileName, ProfileSpec, ProfileStatus, RuntimeInfo};
 
+use crate::components::banner::{BannerTone, banner};
 use crate::components::button::{ButtonVariant, button, button_with_icon, icon_button};
-use crate::components::chip::status_chip;
-use crate::components::dialog::{fade_in, scrim};
+use crate::components::chip::{label_chip, status_chip};
+use crate::components::clock;
+use crate::components::dialog::{fade_in, modal, scrim};
 use crate::components::icons::{Icon, icon};
 use crate::components::paragraph::paragraph;
 use crate::components::skeleton::skeleton_row;
@@ -44,6 +52,12 @@ enum Msg {
     Config(ProfileName, Result<ProfileSpec, AppError>),
     /// What a delete would remove: container count, volume count, volume bytes.
     DeleteFacts(ProfileName, usize, Vec<Option<u64>>),
+    /// Start time and versions of a profile (uptime, sidebar footer).
+    Runtime(ProfileName, Result<RuntimeInfo, AppError>),
+    /// Installed Colima version, checked once at startup.
+    Version(Result<VersionCheck, AppError>),
+    /// `colima prune` finished.
+    Pruned(Result<(), AppError>),
 }
 
 type Inbox = Arc<Mutex<Vec<Msg>>>;
@@ -94,6 +108,14 @@ pub struct MainView {
     progress: HashMap<ProfileName, (Entity<StartProgress>, Subscription)>,
     /// Typed-name delete confirmation, drawn over the window.
     delete_confirm: Option<(Entity<DeleteConfirm>, Subscription)>,
+    /// Start time and versions per profile, reloaded on select and list refresh.
+    runtime: HashMap<ProfileName, RuntimeInfo>,
+    /// Startup Colima version check; `None` until answered or when it failed.
+    version: Option<VersionCheck>,
+    /// The untested-version warning was closed (blocking notices cannot be).
+    notice_dismissed: bool,
+    /// Open 캐시 정리 confirmation.
+    prune_confirm: Option<Confirm>,
     _poll: Task<()>,
 }
 
@@ -123,9 +145,16 @@ impl MainView {
             editor: None,
             progress: HashMap::new(),
             delete_confirm: None,
+            runtime: HashMap::new(),
+            version: None,
+            notice_dismissed: false,
+            prune_confirm: None,
             _poll: poll,
         };
         view.refresh();
+        let inbox = view.inbox.clone();
+        view.app
+            .check_colima_version(move |r| inbox.lock().unwrap().push(Msg::Version(r)));
         view
     }
 
@@ -202,6 +231,7 @@ impl MainView {
                     self.not_installed = None;
                     self.sync_engine(cx);
                     self.load_config();
+                    self.load_runtime();
                 }
                 Msg::Profiles(Err(e)) => {
                     let n = notice(&e);
@@ -223,6 +253,18 @@ impl MainView {
                     self.configs.insert(name, spec);
                 }
                 Msg::Config(_, Err(_)) => {}
+                Msg::Runtime(name, Ok(info)) => {
+                    self.runtime.insert(name, info);
+                }
+                // Unknown uptime and versions show as —.
+                Msg::Runtime(name, Err(_)) => {
+                    self.runtime.remove(&name);
+                }
+                Msg::Version(Ok(check)) => self.version = Some(check),
+                // A missing Colima has its own screen (profile list error).
+                Msg::Version(Err(_)) => {}
+                Msg::Pruned(Ok(())) => {}
+                Msg::Pruned(Err(e)) => self.error = Some(error_text(&e)),
                 Msg::DeleteFacts(name, containers, volume_sizes) => {
                     if self.selected.as_ref() == Some(&name) && self.delete_confirm.is_none() {
                         let copy = confirm_delete_profile(
@@ -270,6 +312,86 @@ impl MainView {
         });
     }
 
+    /// Loads the selected profile's start time and versions.
+    fn load_runtime(&mut self) {
+        let Some(name) = self.selected.clone() else {
+            return;
+        };
+        let inbox = self.inbox.clone();
+        let key = name.clone();
+        self.app.runtime_info(name, move |r| {
+            inbox.lock().unwrap().push(Msg::Runtime(key, r))
+        });
+    }
+
+    /// `가동 3시간 12분` for the selected profile while it runs.
+    pub fn uptime(&self) -> Option<String> {
+        let name = self.selected.as_ref()?;
+        let p = self.list().iter().find(|p| &p.name == name)?;
+        if p.status != ProfileStatus::Running {
+            return None;
+        }
+        uptime_label(self.runtime.get(name)?, clock::now())
+    }
+
+    /// Colima and Docker versions for the sidebar footer (selected profile; Colima falls
+    /// back to the startup check).
+    pub fn version_footer(&self) -> VersionFooter {
+        let mut info = self
+            .selected
+            .as_ref()
+            .and_then(|n| self.runtime.get(n))
+            .cloned()
+            .unwrap_or_default();
+        if info.colima.is_none() {
+            info.colima = self.version.map(|v| v.version);
+        }
+        version_footer(&info)
+    }
+
+    /// Startup notice about the installed Colima version, unless dismissed.
+    pub fn version_notice(&self) -> Option<VersionNotice> {
+        let check = self.version?;
+        let n = version_notice(check.version, check.support)?;
+        let hidden = self.notice_dismissed && n.severity == VersionNoticeSeverity::Warning;
+        (!hidden).then_some(n)
+    }
+
+    /// Closes the untested-version warning; a too-old notice stays.
+    pub fn dismiss_version_notice(&mut self, cx: &mut Context<Self>) {
+        self.notice_dismissed = true;
+        cx.notify();
+    }
+
+    /// Open 캐시 정리 confirmation.
+    pub fn prune_confirm(&self) -> Option<&Confirm> {
+        self.prune_confirm.as_ref()
+    }
+
+    /// Opens the 캐시 정리 confirmation; nothing runs yet.
+    pub fn prune(&mut self, cx: &mut Context<Self>) {
+        self.prune_confirm = Some(confirm_prune_cache());
+        cx.notify();
+    }
+
+    pub fn cancel_prune(&mut self, cx: &mut Context<Self>) {
+        self.prune_confirm = None;
+        cx.notify();
+    }
+
+    /// Runs `colima prune` and closes the confirmation.
+    pub fn confirm_prune(&mut self, cx: &mut Context<Self>) {
+        if self.prune_confirm.take().is_none_or(|c| !c.can_confirm) {
+            cx.notify();
+            return;
+        }
+        self.error = None;
+        let inbox = self.inbox.clone();
+        self.app
+            .prune_cache(move |r| inbox.lock().unwrap().push(Msg::Pruned(r)));
+        cx.notify();
+    }
+
     fn open_editor(&mut self, editor: Entity<ProfileEditor>, cx: &mut Context<Self>) {
         let sub = cx.subscribe(&editor, |v, _, ev: &FormEvent, cx| {
             v.editor = None;
@@ -309,6 +431,7 @@ impl MainView {
             self.creating = false;
             self.sync_engine(cx);
             self.load_config();
+            self.load_runtime();
             cx.notify();
         }
     }
@@ -478,6 +601,8 @@ impl HeaderAction {
 pub struct Inspector {
     /// Label and value, in canvas order.
     pub rows: Vec<(&'static str, String)>,
+    /// Host directories mounted into the VM (empty: none or spec not loaded).
+    pub mounts: Vec<MountRow>,
     pub socket: String,
     pub can_edit: bool,
     pub can_delete: bool,
@@ -562,7 +687,16 @@ impl MainView {
     /// 구성 inspector rows of the selected profile.
     pub fn inspector(&self) -> Option<Inspector> {
         let d = self.detail()?;
+        let spec = self.selected.as_ref().and_then(|n| self.configs.get(n));
+        let kubernetes = spec.map_or("—", |s| {
+            if s.kubernetes {
+                "사용"
+            } else {
+                "사용 안 함"
+            }
+        });
         Some(Inspector {
+            mounts: spec.map(|s| mount_rows(&s.mounts)).unwrap_or_default(),
             socket: docker_socket(&d.name),
             rows: vec![
                 ("런타임", d.runtime),
@@ -573,6 +707,8 @@ impl MainView {
                 ("메모리", d.memory),
                 ("디스크", d.disk),
                 ("IP 주소", d.address),
+                ("가동 시간", self.uptime().unwrap_or_else(|| "—".to_owned())),
+                ("Kubernetes", kubernetes.to_owned()),
             ],
             can_edit: d.actions.edit,
             can_delete: d.actions.delete,
@@ -723,18 +859,30 @@ impl MainView {
                     .children(skeleton)
                     .children(rows),
             )
-            .child(
-                h_flex()
+            .child({
+                let versions = self.version_footer();
+                v_flex()
                     .mt_auto()
                     .p(space(1))
                     .pl(space(3))
+                    .gap(half_step())
                     .border_t_1()
                     .border_color(hsla(p.border))
-                    .child(mono(
-                        concat!("telima ", env!("CARGO_PKG_VERSION")),
-                        p.text_2,
-                    )),
-            )
+                    .child(mono(versions.colima, p.text_2))
+                    .child(mono(versions.docker, p.text_2))
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child(mono(
+                                concat!("telima ", env!("CARGO_PKG_VERSION")),
+                                p.text_2,
+                            ))
+                            .child(
+                                button("prune-cache", "캐시 정리", ButtonVariant::Ghost, p)
+                                    .on_click(cx.listener(|v, _, _, cx| v.prune(cx))),
+                            ),
+                    )
+            })
     }
 
     /// Main-column title bar: 프로필 › name (H2).
@@ -823,19 +971,67 @@ impl MainView {
 
     fn error_banner(&self, p: &Palette) -> Option<Div> {
         self.error.clone().map(|e| {
-            div()
+            banner(BannerTone::Error, p)
                 .mx(space(4))
                 .mb(space(2))
-                .px(space(2))
-                .py(space(1))
-                .rounded(px(metric::RADIUS_MD))
-                .bg(hsla(p.err_bg))
-                .border_1()
-                .border_color(hsla(p.err_border))
-                .text_color(hsla(p.err))
-                .text_size(px(font::SMALL.size))
                 .child(e)
         })
+    }
+
+    /// Colima version notice: too old blocks with an upgrade hint; untested can be closed.
+    fn version_banner(&self, p: &Palette, cx: &mut Context<Self>) -> Option<Div> {
+        let n = self.version_notice()?;
+        let tone = match n.severity {
+            VersionNoticeSeverity::Blocking => BannerTone::Error,
+            VersionNoticeSeverity::Warning => BannerTone::Warning,
+        };
+        let closable = n.severity == VersionNoticeSeverity::Warning;
+        Some(
+            banner(tone, p)
+                .mx(space(4))
+                .mb(space(2))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(n.title))
+                .child(paragraph(&n.message).flex_1().min_w_0())
+                .when_some(n.hint, |el, h| el.child(mono(h, p.text)))
+                .when(closable, |el| {
+                    el.child(
+                        button("dismiss-version", "닫기", ButtonVariant::Ghost, p)
+                            .on_click(cx.listener(|v, _, _, cx| v.dismiss_version_notice(cx))),
+                    )
+                }),
+        )
+    }
+
+    /// 캐시 정리 confirmation in the shared dialog frame.
+    fn prune_dialog(&self, p: &Palette, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let c = self.prune_confirm.clone()?;
+        let confirm = if c.can_confirm {
+            button("prune-confirm", c.confirm_label, ButtonVariant::Primary, p)
+                .on_click(cx.listener(|v, _, _, cx| v.confirm_prune(cx)))
+        } else {
+            crate::components::button::button_disabled("prune-confirm", c.confirm_label, p)
+        };
+        Some(modal(
+            "prune-confirm-scrim",
+            metric::DIALOG_W_SM,
+            p,
+            v_flex()
+                .id("prune-confirm")
+                .occlude()
+                .gap(space(2))
+                .child(heading(c.title, p))
+                .child(note(&c.body, p))
+                .child(
+                    h_flex()
+                        .justify_end()
+                        .gap(space(1))
+                        .child(
+                            button("prune-cancel", "취소", ButtonVariant::Default, p)
+                                .on_click(cx.listener(|v, _, _, cx| v.cancel_prune(cx))),
+                        )
+                        .child(confirm),
+                ),
+        ))
     }
 
     fn profile_pane(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -870,6 +1066,7 @@ impl MainView {
                 d.status_label,
                 p,
             ))
+            .when_some(self.uptime(), |el, up| el.child(label_chip(up, p)))
             .child(div().flex_1())
             .children(actions);
         let tabs = Tab::ALL.into_iter().map(|t| {
@@ -1004,6 +1201,21 @@ impl MainView {
                     v_flex()
                         .py(space(1))
                         .gap(half_step())
+                        .child(caption("디렉터리 마운트", p))
+                        .when(ins.mounts.is_empty(), |el| {
+                            el.child(note(telima_app::view::daily::MOUNTS_EMPTY, p))
+                        })
+                        .children(ins.mounts.into_iter().map(|m| {
+                            h_flex()
+                                .gap(space(1))
+                                .child(mono(m.path, p.text).flex_1().min_w_0().truncate())
+                                .child(caption(m.mode, p).flex_none())
+                        })),
+                )
+                .child(
+                    v_flex()
+                        .py(space(1))
+                        .gap(half_step())
                         .child(caption("docker 소켓", p))
                         .child(mono(ins.socket, p.text)),
                 )
@@ -1049,6 +1261,7 @@ impl Render for MainView {
             .h_full()
             .bg(hsla(p.bg))
             .child(self.titlebar(p))
+            .children(self.version_banner(p, cx))
             .when(screen != Screen::Profile, |el| {
                 el.children(self.error_banner(p))
             })
@@ -1062,6 +1275,7 @@ impl Render for MainView {
             .child(self.sidebar(p, cx))
             .child(main)
             .children(overlay)
+            .children(self.prune_dialog(p, cx))
     }
 }
 

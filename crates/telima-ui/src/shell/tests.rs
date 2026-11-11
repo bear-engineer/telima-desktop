@@ -126,13 +126,13 @@ fn fixture_vm(cx: &mut TestAppContext, tweak: impl FnOnce(&mut FakeVm)) -> Fixtu
         version: Some(LAST_TESTED),
         ..Default::default()
     };
-    tweak(&mut vm);
     vm.specs.lock().unwrap().push(spec("work"));
     *vm.profiles.lock().unwrap() = vec![
         profile("work", ProfileStatus::Stopped),
         profile("default", ProfileStatus::Running),
         profile("alpha", ProfileStatus::Stopped),
     ];
+    tweak(&mut vm);
     let vm = Arc::new(vm);
     let engine = FakeEngine::default();
     *engine.containers.lock().unwrap() = vec![container("c1", "pg-main")];

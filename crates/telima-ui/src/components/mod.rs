@@ -8,8 +8,12 @@
 //! - [`skeleton`]: loading row
 //! - [`paragraph`]: Korean-safe text that wraps only between words (eojeol)
 //! - [`icons`]: line icons (plus, play, stop, restart)
+//! - [`banner`]: inline error / warning notice
+//! - [`clock`]: wall clock for uptime and relative times
+pub mod banner;
 pub mod button;
 pub mod chip;
+pub mod clock;
 pub mod dialog;
 pub mod icons;
 pub mod paragraph;

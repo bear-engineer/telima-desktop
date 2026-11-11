@@ -31,3 +31,20 @@ pub fn status_chip(
         .child(status_shape(id, status, p))
         .child(label.into().into_any_element())
 }
+
+/// Neutral chip with a label only (facts next to a status chip, e.g. uptime).
+pub fn label_chip(label: impl Into<SharedString>, p: &Palette) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(metric::CHIP_H))
+        .px(px(metric::SPACE[1]))
+        .rounded(px(metric::RADIUS_SM))
+        .bg(hsla(p.bg_sunken))
+        .text_color(hsla(p.text_2))
+        .text_size(px(font::SMALL.size))
+        .line_height(px(font::SMALL.line_height))
+        .whitespace_nowrap()
+        .child(label.into().into_any_element())
+}
