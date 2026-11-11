@@ -1,0 +1,3 @@
+colima version 0.10.3
+git commit: 0000000
+runtime: docker
