@@ -19,8 +19,8 @@ use telima_app::view::daily::{
 use telima_app::view::notice::{NoticeKind, error_text, notice};
 use telima_app::view::time_text::{uptime_label, uptime_value_label};
 use telima_app::view::{
-    Confirm, ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile, profile_detail,
-    profile_rows,
+    Confirm, ProfileDetail, ProfileRow, StatusKind, confirm_delete_profile, profile_actions,
+    profile_detail, profile_rows,
 };
 use telima_core::profile::{Profile, ProfileName, ProfileSpec, ProfileStatus, RuntimeInfo};
 
@@ -42,6 +42,9 @@ use crate::theme::{Palette, font, metric};
 
 /// How often the view drains finished use-case results.
 const POLL: Duration = Duration::from_millis(50);
+
+/// Status of a placeholder row whose create failed; any non-Colima status shows as 오류.
+const CREATE_FAILED: &str = "Failed";
 
 /// Result of a use case, sent from the spawner thread to the view.
 enum Msg {
@@ -120,7 +123,8 @@ pub struct MainView {
     prune_focus: FocusHandle,
     /// Set by [`Self::prune`] until the next render moves focus into the confirmation.
     prune_focus_on_open: bool,
-    /// Profiles being created, shown in the sidebar until `colima ls` lists them (F1).
+    /// Profiles being created, shown in the sidebar until `colima ls` lists them (F1). A
+    /// failed or cancelled create keeps its row until the user closes its log.
     placeholders: HashMap<ProfileName, Profile>,
     /// Docker server version last reported by any profile; the footer keeps it while the
     /// selected profile's engine is down (F10).
@@ -508,16 +512,41 @@ impl MainView {
         let sub = cx.subscribe(&progress, move |v, _, ev: &ProgressEnd, cx| {
             v.pending.remove(&key);
             v.started.remove(&key);
-            v.placeholders.remove(&key);
-            // A clean finish needs no log; failures and cancels stay until closed.
-            if *ev == ProgressEnd::Done {
-                v.progress.remove(&key);
+            // A clean finish needs no log; failures and cancels stay until closed, and so
+            // does the sidebar row of a create that Colima does not list.
+            match ev {
+                ProgressEnd::Done => {
+                    v.progress.remove(&key);
+                    v.placeholders.remove(&key);
+                }
+                ProgressEnd::Failed(_) => v.mark_create_failed(&key),
+                ProgressEnd::Cancelled => {}
             }
             v.refresh();
             cx.notify();
         });
         self.progress.insert(name, (progress, sub));
         cx.notify();
+    }
+
+    /// Shows the placeholder row of a failed create in the error state.
+    fn mark_create_failed(&mut self, name: &ProfileName) {
+        let Some(placeholder) = self.placeholders.get_mut(name) else {
+            return;
+        };
+        let before = placeholder.clone();
+        placeholder.status = ProfileStatus::Other(CREATE_FAILED.to_owned());
+        let failed = placeholder.clone();
+        if let Some(row) = self.profiles.iter_mut().flatten().find(|p| **p == before) {
+            *row = failed;
+        }
+    }
+
+    /// `name` is only a placeholder row: Colima does not list it, so no command applies.
+    fn unlisted(&self, name: &ProfileName) -> bool {
+        self.placeholders
+            .get(name)
+            .is_some_and(|ph| self.list().iter().any(|p| p == ph))
     }
 
     fn busy(&self, name: &ProfileName) -> bool {
@@ -533,7 +562,11 @@ impl MainView {
     pub fn detail(&self) -> Option<ProfileDetail> {
         let name = self.selected.as_ref()?;
         let p = self.list().iter().find(|p| &p.name == name)?;
-        Some(profile_detail(p, self.configs.get(name), self.busy(name)))
+        let mut d = profile_detail(p, self.configs.get(name), self.busy(name));
+        if self.unlisted(name) {
+            d.actions = profile_actions(d.kind, true);
+        }
+        Some(d)
     }
 
     pub fn select(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -571,7 +604,7 @@ impl MainView {
         let Some(name) = self.selected.clone() else {
             return;
         };
-        if self.busy(&name) {
+        if self.busy(&name) || self.unlisted(&name) {
             return;
         }
         self.error = None;
@@ -596,7 +629,7 @@ impl MainView {
         let Some(name) = self.selected.clone() else {
             return;
         };
-        if self.busy(&name) || self.delete_confirm.is_some() {
+        if self.busy(&name) || self.unlisted(&name) || self.delete_confirm.is_some() {
             return;
         }
         let inbox = self.inbox.clone();
@@ -628,6 +661,10 @@ impl MainView {
             .is_some_and(|(p, _)| !p.read(cx).is_running());
         if ended {
             self.progress.remove(&name);
+            // A failed create's row goes too, unless Colima lists the profile.
+            if self.placeholders.remove(&name).is_some() {
+                self.refresh();
+            }
             cx.notify();
         }
     }
@@ -636,7 +673,7 @@ impl MainView {
         let Some(name) = self.selected.clone() else {
             return;
         };
-        if self.busy(&name) {
+        if self.busy(&name) || self.unlisted(&name) {
             return;
         }
         self.error = None;

@@ -867,6 +867,8 @@ fn failed_create_keeps_its_row_and_log_until_the_log_is_closed(cx: &mut TestAppC
         Some(crate::profile_form::ProgressEnd::Failed(_))
     )));
     assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Profile);
+    // Colima does not know the profile: no command can run on the placeholder.
+    assert!(f.view.read_with(cx, |v, _| v.header_actions()).is_empty());
 
     // Another refresh (the poll) does not drop it either.
     f.view.update(cx, |v, _| v.refresh());
