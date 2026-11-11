@@ -3,7 +3,10 @@
 use std::future::Future;
 
 use crate::container::{Container, DiskUsage, Image, LogLine, PruneReport, Volume};
-use crate::profile::{Profile, ProfileName, ProfileSpec, ProgressEvent};
+use crate::profile::{
+    DeleteOptions, Profile, ProfileName, ProfileSpec, ProgressEvent, RuntimeInfo,
+};
+use crate::version::ColimaVersion;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PortError {
@@ -47,12 +50,29 @@ pub trait VmManager: Send + Sync {
     ) -> impl Future<Output = PortResult<()>> + Send;
     /// Persist new settings; they apply on the next start.
     fn update(&self, spec: &ProfileSpec) -> impl Future<Output = PortResult<()>> + Send;
-    fn delete(&self, name: &ProfileName) -> impl Future<Output = PortResult<()>> + Send;
+    /// Delete the VM. The data disk goes too only when `options.data` is set.
+    fn delete(
+        &self,
+        name: &ProfileName,
+        options: DeleteOptions,
+    ) -> impl Future<Output = PortResult<()>> + Send;
+    /// Version of the installed Colima. Works with no profile at all.
+    fn colima_version(&self) -> impl Future<Output = PortResult<ColimaVersion>> + Send;
+    /// Start time and tool versions of one profile. Fields the adapter cannot read are `None`;
+    /// a stopped profile is not an error.
+    fn runtime_info(
+        &self,
+        name: &ProfileName,
+    ) -> impl Future<Output = PortResult<RuntimeInfo>> + Send;
+    /// Remove Colima's cached downloads (shared by all profiles). Running VMs are not touched.
+    fn prune_cache(&self) -> impl Future<Output = PortResult<()>> + Send;
 }
 
 /// Containers, images and volumes on one profile's engine.
 pub trait ContainerEngine: Send + Sync {
     fn containers(&self) -> impl Future<Output = PortResult<Vec<Container>>> + Send;
+    fn start_container(&self, id: &str) -> impl Future<Output = PortResult<()>> + Send;
+    fn stop_container(&self, id: &str) -> impl Future<Output = PortResult<()>> + Send;
     fn restart_container(&self, id: &str) -> impl Future<Output = PortResult<()>> + Send;
     fn remove_container(
         &self,
@@ -83,9 +103,7 @@ mod tests {
     use std::sync::Mutex;
     use std::task::{Context, Poll, Waker};
 
-    use crate::profile::RuntimeInfo;
     use crate::time::UnixMillis;
-    use crate::version::ColimaVersion;
 
     fn block_on<F: Future>(fut: F) -> F::Output {
         let mut fut = pin!(fut);

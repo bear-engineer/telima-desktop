@@ -1,9 +1,7 @@
 //! Single source of truth for Colima profile rules (allowed options per OS, immutable fields).
 //! UI locking, validation and adapters all read from here.
+//! The supported Colima version range lives in `crate::version`.
 use crate::profile::{HostOs, MountType, ProfileSpec, Runtime, VmType};
-
-/// Lowest Colima version this app is tested against.
-pub const MIN_COLIMA_VERSION: (u32, u32, u32) = (0, 10, 0);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RuleViolation {
@@ -21,6 +19,12 @@ pub enum RuleViolation {
     Immutable(&'static str),
     #[error("disk can only grow (from {from} GiB to {to} GiB requested)")]
     DiskShrink { from: u32, to: u32 },
+    #[error("mount path {0:?} must be absolute")]
+    MountPathNotAbsolute(String),
+    #[error("mount path {0:?} is listed more than once")]
+    DuplicateMount(String),
+    #[error("Kubernetes needs the docker runtime (got {0:?})")]
+    KubernetesNeedsDocker(Runtime),
 }
 
 /// VM types offered on `os`.
@@ -73,7 +77,43 @@ pub fn validate_new(spec: &ProfileSpec, os: HostOs) -> Result<(), Vec<RuleViolat
             errs.push(RuleViolation::TooSmall { field, min });
         }
     }
+    if spec.kubernetes && spec.runtime != KUBERNETES_RUNTIME {
+        errs.push(RuleViolation::KubernetesNeedsDocker(spec.runtime));
+    }
+    check_mounts(spec, &mut errs);
     if errs.is_empty() { Ok(()) } else { Err(errs) }
+}
+
+/// The only runtime this app enables Kubernetes with.
+pub const KUBERNETES_RUNTIME: Runtime = Runtime::Docker;
+
+/// Shape checks only: each path absolute, no path twice. Whether the directory exists on the
+/// host is the adapter's concern.
+fn check_mounts(spec: &ProfileSpec, errs: &mut Vec<RuleViolation>) {
+    let mut seen: Vec<&str> = Vec::new();
+    for mount in &spec.mounts {
+        if !mount.path.starts_with('/') {
+            errs.push(RuleViolation::MountPathNotAbsolute(mount.path.clone()));
+            continue;
+        }
+        let key = mount_key(&mount.path);
+        if seen.contains(&key) {
+            let dup = RuleViolation::DuplicateMount(key.to_owned());
+            if !errs.contains(&dup) {
+                errs.push(dup);
+            }
+        } else {
+            seen.push(key);
+        }
+    }
+}
+
+/// A mount path without trailing slashes (`/a/b/` and `/a/b` are the same mount; `/` stays `/`).
+fn mount_key(path: &str) -> &str {
+    match path.trim_end_matches('/') {
+        "" => "/",
+        trimmed => trimmed,
+    }
 }
 
 /// Check an edit of an existing profile (`current` → `next`).
@@ -104,7 +144,7 @@ pub fn validate_update(
     if errs.is_empty() { Ok(()) } else { Err(errs) }
 }
 
-type FieldChanged = fn(&ProfileSpec, &ProfileSpec) -> bool;
+pub type FieldChanged = fn(&ProfileSpec, &ProfileSpec) -> bool;
 
 /// Fields Colima cannot change after creation. The UI locks exactly these.
 pub const IMMUTABLE_FIELDS: &[(&str, FieldChanged)] = &[
@@ -112,6 +152,32 @@ pub const IMMUTABLE_FIELDS: &[(&str, FieldChanged)] = &[
     ("vm_type", |a, b| a.vm_type != b.vm_type),
     ("runtime", |a, b| a.runtime != b.runtime),
 ];
+
+/// Fields that can change, but only take effect when the VM starts again. Editing one of these
+/// on a running profile needs a restart; on a stopped profile the next start applies it.
+/// Together with `IMMUTABLE_FIELDS` this covers every field of `ProfileSpec`.
+pub const RESTART_FIELDS: &[(&str, FieldChanged)] = &[
+    ("cpus", |a, b| a.cpus != b.cpus),
+    ("memory_gib", |a, b| a.memory_gib != b.memory_gib),
+    ("disk_gib", |a, b| a.disk_gib != b.disk_gib),
+    ("mount_type", |a, b| a.mount_type != b.mount_type),
+    ("rosetta", |a, b| a.rosetta != b.rosetta),
+    ("network_address", |a, b| {
+        a.network_address != b.network_address
+    }),
+    ("mounts", |a, b| a.mounts != b.mounts),
+    ("kubernetes", |a, b| a.kubernetes != b.kubernetes),
+];
+
+/// Names of the changed fields (`current` → `next`) that need a restart to take effect,
+/// in `RESTART_FIELDS` order. Empty when nothing restart-bound changed.
+pub fn restart_required(current: &ProfileSpec, next: &ProfileSpec) -> Vec<&'static str> {
+    RESTART_FIELDS
+        .iter()
+        .filter(|(_, changed)| changed(current, next))
+        .map(|(field, _)| *field)
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

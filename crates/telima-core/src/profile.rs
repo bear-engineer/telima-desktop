@@ -1,5 +1,9 @@
 //! Colima profile entities and value objects.
 use std::fmt;
+use std::time::Duration;
+
+use crate::time::UnixMillis;
+use crate::version::ColimaVersion;
 
 /// Host operating system. Decides which VM options exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +77,42 @@ pub struct ProfileSpec {
     pub runtime: Runtime,
     pub rosetta: bool,
     pub network_address: bool,
+    /// Host directories shared with the VM. Empty means Colima's default (the home directory).
+    pub mounts: Vec<Mount>,
+    /// Run Kubernetes (k3s) inside the VM.
+    pub kubernetes: bool,
+}
+
+/// A host directory mounted into the VM at the same path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Mount {
+    pub path: String,
+    pub writable: bool,
+}
+
+/// What `delete` removes besides the VM itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeleteOptions {
+    /// Also delete the data disk (images, containers, volumes). Off by default.
+    pub data: bool,
+}
+
+/// Facts about a running profile that `list` does not report. Each is `None` when unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RuntimeInfo {
+    pub started_at: Option<UnixMillis>,
+    pub colima: Option<ColimaVersion>,
+    /// Docker client version as reported, without a leading `v`.
+    pub docker_client: Option<String>,
+    /// Docker server (engine in the VM) version as reported, without a leading `v`.
+    pub docker_server: Option<String>,
+}
+
+impl RuntimeInfo {
+    /// How long the profile has been running at `now`.
+    pub fn uptime(&self, now: UnixMillis) -> Option<Duration> {
+        self.started_at.map(|started| started.elapsed_until(now))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +153,6 @@ pub enum ProgressLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn uptime_is_measured_from_the_start_time() {

@@ -1,4 +1,5 @@
 //! Container-engine entities.
+use crate::time::UnixMillis;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerState {
@@ -24,6 +25,52 @@ impl ContainerState {
             _ => Self::Other,
         }
     }
+
+    /// The engine accepts `start` only for a container that is not running in any form.
+    /// `Dead` cannot be started, `Paused` needs unpause; unknown states offer nothing.
+    pub fn can_start(self) -> bool {
+        matches!(self, Self::Created | Self::Exited)
+    }
+
+    /// The engine accepts `stop` for a container whose process exists.
+    pub fn can_stop(self) -> bool {
+        matches!(self, Self::Running | Self::Paused | Self::Restarting)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PortProtocol {
+    Tcp,
+    Udp,
+    Sctp,
+}
+
+impl PortProtocol {
+    /// Map an engine protocol word (`tcp`, `udp`, `sctp`); `None` for anything else.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.to_ascii_lowercase().as_str() {
+            "tcp" => Some(Self::Tcp),
+            "udp" => Some(Self::Udp),
+            "sctp" => Some(Self::Sctp),
+            _ => None,
+        }
+    }
+}
+
+/// One container port. Exposed-only ports have no host side.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PortBinding {
+    pub host_ip: Option<String>,
+    pub host_port: Option<u16>,
+    pub container_port: u16,
+    pub protocol: PortProtocol,
+}
+
+impl PortBinding {
+    /// Reachable from the host (has a host port), not just exposed inside the engine network.
+    pub fn is_published(&self) -> bool {
+        self.host_port.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +80,10 @@ pub struct Container {
     pub image: String,
     pub state: ContainerState,
     pub status_text: String,
+    pub ports: Vec<PortBinding>,
+    pub created_at: Option<UnixMillis>,
+    /// Last start time; `None` when never started or when the engine did not report it.
+    pub started_at: Option<UnixMillis>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +135,8 @@ pub struct PruneReport {
 pub struct LogLine {
     pub stream: LogStream,
     pub text: String,
+    /// When the engine received the line; `None` when timestamps were not requested or parsed.
+    pub timestamp: Option<UnixMillis>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
