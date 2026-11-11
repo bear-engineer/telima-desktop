@@ -46,6 +46,28 @@ class LayerGuardTest(unittest.TestCase):
         m = meta({"telima-colima": ["telima-core", "telima-docker", "gpui-kit"]})
         self.assertEqual(sorted(violations(m)), ["telima-colima -> gpui-kit", "telima-colima -> telima-docker"])
 
+    def test_tray_must_not_reach_ui_runtime_or_adapters(self):
+        m = meta({
+            "telima-tray": ["telima-app", "gpui-kit", "tokio", "bollard", "telima-colima",
+                            "telima-docker", "telima-ui", "telima"],
+        })
+        self.assertEqual(
+            sorted(violations(m)),
+            [
+                "telima-tray -> bollard",
+                "telima-tray -> gpui-kit",
+                "telima-tray -> telima",
+                "telima-tray -> telima-colima",
+                "telima-tray -> telima-docker",
+                "telima-tray -> telima-ui",
+                "telima-tray -> tokio",
+            ],
+        )
+
+    def test_tray_may_depend_on_app(self):
+        m = meta({"telima-tray": ["telima-app", "tray-icon", "ksni"]})
+        self.assertEqual(violations(m), [])
+
     def test_dev_dependencies_are_ignored(self):
         m = meta({"telima-core": []})
         m["packages"][0]["dependencies"].append({"name": "tokio", "kind": "dev"})
