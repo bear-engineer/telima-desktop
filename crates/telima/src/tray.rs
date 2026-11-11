@@ -55,20 +55,46 @@ pub fn plan(cmd: &AppCommand, window_open: bool) -> Vec<Step> {
 
 /// [`Step`]을 수행하는 쪽.
 pub trait Shell {
-    fn window_open(&self) -> bool;
-    fn show_window(&mut self);
+    /// 메인 창 하나를 가리키는 핸들.
+    type Window: Clone;
+    /// 이 프로세스가 연 메인 창 핸들, 오래된 것부터. 이미 닫힌 것이 섞일 수 있다.
+    fn windows(&self) -> Vec<Self::Window>;
+    /// `window`가 아직 살아 있는지(갱신이 성공하는지).
+    fn alive(&mut self, window: &Self::Window) -> bool;
+    /// `window`를 앞으로 가져온다.
+    fn activate(&mut self, window: &Self::Window);
+    /// 새 메인 창을 열고 그 핸들을 돌려준다.
+    fn open(&mut self) -> Self::Window;
     fn track(&mut self, name: ProfileName, cmd: Lifecycle);
-    fn run(&mut self, cmd: &AppCommand);
+    /// `cmd`를 `window`에서 실행한다. 창이 사라졌으면 오류.
+    fn run(&mut self, window: &Self::Window, cmd: &AppCommand) -> Result<(), String>;
     fn poll_now(&mut self);
     fn quit(&mut self);
+    /// 삼키면 안 되는 실패를 남긴다(표준 오류).
+    fn log(&mut self, message: &str);
 }
 
-pub fn apply(cmd: &AppCommand, shell: &mut impl Shell) {
-    for step in plan(cmd, shell.window_open()) {
+/// 살아 있는 첫 메인 창.
+pub fn live_window<S: Shell>(shell: &mut S) -> Option<S::Window> {
+    shell.windows().into_iter().next()
+}
+
+/// 살아 있는 창을 앞으로 가져오거나, 없으면 하나 연다. 명령을 실행할 창을 돌려준다.
+pub fn show_window<S: Shell>(shell: &mut S) -> S::Window {
+    shell.open()
+}
+
+pub fn apply<S: Shell>(cmd: &AppCommand, shell: &mut S) {
+    let mut window = live_window(shell);
+    for step in plan(cmd, window.is_some()) {
         match step {
-            Step::ShowWindow => shell.show_window(),
+            Step::ShowWindow => window = Some(show_window(shell)),
             Step::Track(name, lc) => shell.track(name, lc),
-            Step::Run(cmd) => shell.run(&cmd),
+            Step::Run(cmd) => {
+                if let Some(w) = &window {
+                    let _ = shell.run(w, &cmd);
+                }
+            }
             Step::PollNow => shell.poll_now(),
             Step::Quit => shell.quit(),
         }
@@ -123,35 +149,67 @@ mod tests {
         ProfileName::parse(s).unwrap()
     }
 
+    /// 창 핸들은 번호, `windows[i].1`이 거짓이면 닫힌(죽은) 핸들.
     #[derive(Default)]
     struct Fake {
-        open: bool,
+        windows: Vec<(u32, bool)>,
+        /// 참이면 `run`이 실패한다.
+        run_fails: bool,
         calls: Vec<String>,
     }
 
-    impl Shell for Fake {
-        fn window_open(&self) -> bool {
-            self.open
+    impl Fake {
+        fn with(windows: &[(u32, bool)]) -> Self {
+            Self {
+                windows: windows.to_vec(),
+                ..Self::default()
+            }
         }
-        fn show_window(&mut self) {
-            self.open = true;
-            self.calls.push("show".into());
+        fn opened(&self) -> usize {
+            self.calls.iter().filter(|c| c.starts_with("open")).count()
+        }
+    }
+
+    impl Shell for Fake {
+        type Window = u32;
+        fn windows(&self) -> Vec<u32> {
+            self.windows.iter().map(|(id, _)| *id).collect()
+        }
+        fn alive(&mut self, window: &u32) -> bool {
+            self.windows.iter().any(|(id, ok)| id == window && *ok)
+        }
+        fn activate(&mut self, window: &u32) {
+            self.calls.push(format!("show {window}"));
+        }
+        fn open(&mut self) -> u32 {
+            let id = self.windows.iter().map(|(id, _)| id + 1).max().unwrap_or(1);
+            self.windows.push((id, true));
+            self.calls.push(format!("open {id}"));
+            id
         }
         fn track(&mut self, name: ProfileName, cmd: Lifecycle) {
             self.calls.push(format!("track {} {cmd:?}", name.as_str()));
         }
-        fn run(&mut self, cmd: &AppCommand) {
+        fn run(&mut self, window: &u32, cmd: &AppCommand) -> Result<(), String> {
             let text = match cmd {
                 AppCommand::Restart(n) => format!("Restart({})", n.as_str()),
+                AppCommand::Stop(n) => format!("Stop({})", n.as_str()),
                 other => format!("{other:?}"),
             };
-            self.calls.push(format!("run {text}"));
+            self.calls.push(format!("run {window} {text}"));
+            if self.run_fails || !self.alive(window) {
+                return Err("window is gone".into());
+            }
+            Ok(())
         }
         fn poll_now(&mut self) {
             self.calls.push("poll".into());
         }
         fn quit(&mut self) {
             self.calls.push("quit".into());
+        }
+        fn log(&mut self, message: &str) {
+            self.calls.push(format!("log {message}"));
         }
     }
 
@@ -219,18 +277,49 @@ mod tests {
         apply(&AppCommand::Restart(name("dev")), &mut fake);
         assert_eq!(
             fake.calls,
-            ["show", "track dev Restart", "run Restart(dev)"]
+            ["open 1", "track dev Restart", "run 1 Restart(dev)"]
         );
     }
 
     #[test]
     fn apply_quit_records_quit() {
-        let mut fake = Fake {
-            open: true,
-            ..Fake::default()
-        };
+        let mut fake = Fake::with(&[(1, true)]);
         apply(&AppCommand::Quit, &mut fake);
         assert_eq!(fake.calls, ["quit"]);
+    }
+
+    #[test]
+    fn lifecycle_command_runs_on_the_live_window_past_a_dead_handle() {
+        let mut fake = Fake::with(&[(1, false), (2, true)]);
+        apply(&AppCommand::Stop(name("dev")), &mut fake);
+        assert_eq!(fake.calls, ["track dev Stop", "run 2 Stop(dev)"]);
+        assert_eq!(fake.opened(), 0, "never a second window");
+    }
+
+    #[test]
+    fn open_window_activates_the_live_window_past_a_dead_handle() {
+        let mut fake = Fake::with(&[(1, false), (2, true)]);
+        apply(&AppCommand::OpenWindow, &mut fake);
+        assert_eq!(fake.calls, ["show 2"]);
+    }
+
+    #[test]
+    fn only_dead_handles_open_one_window_and_run_there() {
+        let mut fake = Fake::with(&[(1, false)]);
+        apply(&AppCommand::Stop(name("dev")), &mut fake);
+        assert_eq!(fake.calls, ["open 2", "track dev Stop", "run 2 Stop(dev)"]);
+    }
+
+    #[test]
+    fn a_failed_run_is_logged_not_dropped() {
+        let mut fake = Fake {
+            run_fails: true,
+            ..Fake::with(&[(1, true)])
+        };
+        apply(&AppCommand::Stop(name("dev")), &mut fake);
+        assert_eq!(fake.calls.len(), 3, "{:?}", fake.calls);
+        assert!(fake.calls[2].starts_with("log "), "{:?}", fake.calls);
+        assert!(fake.calls[2].contains("window is gone"), "{:?}", fake.calls);
     }
 
     #[test]

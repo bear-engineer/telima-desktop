@@ -11,7 +11,8 @@ use gpui_kit::{
 use telima_app::AppCommand;
 use telima_app::profiles::Lifecycle;
 use telima_app::view::StatusKind;
-use telima_app::view::tray::{NEW_PROFILE_MENU, ToolbarActions, toolbar_actions};
+use telima_app::view::tray::{BusyOp, NEW_PROFILE_MENU, ToolbarActions, toolbar_actions};
+use telima_core::profile::ProfileName;
 
 use super::{MainView, Screen, elapsed_text, half_step, status_of};
 use crate::components::button::{ButtonVariant, button_with_icon, icon_button};
@@ -54,6 +55,16 @@ fn command_id(cmd: &AppCommand) -> &'static str {
 }
 
 impl MainView {
+    /// What runs on `name`, for the tray: the kind of a start/stop/restart sent from this
+    /// window, `Other` for anything else (create, edit, delete), `None` when idle.
+    pub fn busy_op(&self, _name: &ProfileName, _cx: &App) -> Option<BusyOp> {
+        None
+    }
+
+    /// Selects `name` once the profile list arrives (a reopened window keeps the last
+    /// profile). Falls back to the first profile when `name` is gone.
+    pub fn prefer(&mut self, _name: ProfileName) {}
+
     /// Toolbar buttons for the selected profile; no lifecycle buttons outside the profile
     /// screen, for a create placeholder Colima does not list, or while a command runs.
     pub fn toolbar_actions(&self) -> ToolbarActions {

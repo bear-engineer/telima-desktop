@@ -1,12 +1,14 @@
 //! U1 window toolbar (canvas 07-09): profile dropdown, drag area, lifecycle buttons or
 //! progress text, divider, refresh, new profile. The header and sidebar carry no actions.
-use gpui_kit::px;
+use gpui_kit::{AppContext as _, px};
 use telima_app::AppCommand;
+use telima_app::profiles::Lifecycle;
 use telima_app::view::StatusKind;
+use telima_app::view::tray::BusyOp;
 use telima_app::view::tray::{NEW_PROFILE, REFRESH, toolbar_actions};
 use telima_core::profile::ProfileName;
 
-use super::{Fixture, click, fixture, parts, real_window};
+use super::{Fixture, MainView, click, fixture, parts, real_window};
 use crate::components::icons::{Icon, strokes};
 use crate::shell::{MenuRow, Screen, lifecycle_icon};
 use crate::theme::metric;
@@ -253,4 +255,45 @@ fn u1_real_window_new_profile_from_toolbar_and_menu(cx: &mut gpui_kit::TestAppCo
     click(cx, "profile-menu-new");
     assert_eq!(view.read_with(cx, |v, _| v.screen()), Screen::Create);
     assert!(view.read_with(cx, |v, _| v.profile_menu().is_none()));
+}
+
+#[gpui_kit::test]
+fn t2_busy_op_reports_the_kind_of_a_window_started_command(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let op = |f: &Fixture, cx: &mut gpui_kit::TestAppContext, n: &str| {
+        f.view.read_with(cx, |v, cx| v.busy_op(&name(n), cx))
+    };
+    assert_eq!(op(&f, cx, "work"), None);
+    f.view.update(cx, |v, cx| {
+        v.run_command(&AppCommand::Start(name("work")), cx)
+    });
+    assert_eq!(
+        op(&f, cx, "work"),
+        Some(BusyOp::Lifecycle(Lifecycle::Start))
+    );
+    assert_eq!(op(&f, cx, "default"), None);
+    f.settle(cx);
+    f.settle(cx);
+    assert_eq!(op(&f, cx, "work"), None, "idle once the command ends");
+}
+
+#[gpui_kit::test]
+fn t3_a_reopened_window_keeps_the_preferred_profile(cx: &mut gpui_kit::TestAppContext) {
+    let (vm, spawner, asked, app) = parts(|_| {});
+    let view = cx.new(|cx| {
+        let mut v = MainView::new(app, cx);
+        v.prefer(name("work"));
+        v
+    });
+    let f = Fixture {
+        vm,
+        spawner,
+        asked,
+        view,
+    };
+    f.settle(cx);
+    assert_eq!(
+        f.view.read_with(cx, |v, _| v.selected().cloned()),
+        Some(name("work"))
+    );
 }

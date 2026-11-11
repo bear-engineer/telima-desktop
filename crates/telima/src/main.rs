@@ -47,35 +47,57 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Colima adapter. When discovery fails, the CLI is pointed at a missing binary so every call
-/// surfaces `PortError::Unavailable` and the UI shows the not-installed state.
-/// The main window of this process, if it is open.
-fn main_window(cx: &gpui_kit::App) -> Option<gpui_kit::WindowHandle<MainView>> {
-    cx.windows()
-        .into_iter()
-        .find_map(|w| w.downcast::<MainView>())
+/// The main window: its GPUI handle and the view inside it. gpui-kit's `open_window` wraps
+/// the view in its `Root`, so `AnyWindowHandle::downcast::<MainView>` never finds it; the
+/// app keeps the handle it opened instead.
+#[derive(Clone)]
+struct MainWindow {
+    handle: gpui_kit::AnyWindowHandle,
+    view: gpui_kit::WeakEntity<MainView>,
 }
 
-fn open_main_window(app: &App, cx: &mut gpui_kit::App) {
+/// The window this process opened last, and the profile it showed (a reopened window
+/// selects it again).
+#[derive(Default)]
+struct MainSlot {
+    window: Option<MainWindow>,
+    last_selected: Option<ProfileName>,
+}
+
+/// True while the window is open: its view exists and an update on it succeeds.
+fn window_alive(window: &MainWindow, cx: &mut gpui_kit::App) -> bool {
+    window.view.upgrade().is_some() && window.handle.update(cx, |_, _, _| ()).is_ok()
+}
+
+/// The view of the open main window, if any.
+fn live_view(cx: &mut gpui_kit::App) -> Option<gpui_kit::Entity<MainView>> {
+    let window = MAIN.with(|m| m.borrow().window.clone())?;
+    if !window_alive(&window, cx) {
+        return None;
+    }
+    window.view.upgrade()
+}
+
+fn open_main_window(app: &App, cx: &mut gpui_kit::App) -> MainWindow {
     let options = telima_ui::main_window_options(cx);
     let app = app.clone();
-    gpui_kit::open_window(options, cx, move |_, cx| {
-        cx.new(|cx| MainView::new(app.clone(), cx))
+    let prefer = MAIN.with(|m| m.borrow().last_selected.clone());
+    let (handle, view) = gpui_kit::open_window(options, cx, move |_, cx| {
+        cx.new(|cx| {
+            let mut view = MainView::new(app.clone(), cx);
+            if let Some(name) = prefer {
+                view.prefer(name);
+            }
+            view
+        })
     })
     .expect("open main window");
-}
-
-/// Brings the main window to the front, or opens a new one after it was closed.
-fn show_main_window(app: &App, cx: &mut gpui_kit::App) {
-    match main_window(cx) {
-        Some(window) => {
-            if window.update(cx, |_, w, _| w.activate_window()).is_err() {
-                open_main_window(app, cx);
-            }
-        }
-        None => open_main_window(app, cx),
-    }
-    cx.activate(true);
+    let window = MainWindow {
+        handle,
+        view: view.downgrade(),
+    };
+    MAIN.with(|m| m.borrow_mut().window = Some(window.clone()));
+    window
 }
 
 /// Shows `CLOSE_NOTICE` through the OS notification centre; best effort, errors are ignored.
@@ -111,27 +133,43 @@ struct GpuiShell<'a> {
 }
 
 impl tray::Shell for GpuiShell<'_> {
-    fn window_open(&self) -> bool {
-        main_window(self.cx).is_some()
+    type Window = MainWindow;
+    fn windows(&self) -> Vec<MainWindow> {
+        MAIN.with(|m| m.borrow().window.clone())
+            .into_iter()
+            .collect()
     }
-    fn show_window(&mut self) {
-        show_main_window(self.app, self.cx);
+    fn alive(&mut self, window: &MainWindow) -> bool {
+        window_alive(window, self.cx)
+    }
+    fn activate(&mut self, window: &MainWindow) {
+        if let Err(err) = window.handle.update(self.cx, |_, w, _| w.activate_window()) {
+            eprintln!("telima: tray: activate window: {err}");
+        }
+        self.cx.activate(true);
+    }
+    fn open(&mut self) -> MainWindow {
+        let window = open_main_window(self.app, self.cx);
+        self.cx.activate(true);
+        window
     }
     fn track(&mut self, name: ProfileName, cmd: Lifecycle) {
         self.tracked.insert(name, cmd);
     }
-    fn run(&mut self, cmd: &AppCommand) {
-        if let Some(window) = main_window(self.cx) {
-            window
-                .update(self.cx, |view, _, cx| view.run_command(cmd, cx))
-                .ok();
-        }
+    fn run(&mut self, window: &MainWindow, cmd: &AppCommand) -> Result<(), String> {
+        window
+            .view
+            .update(self.cx, |view, cx| view.run_command(cmd, cx))
+            .map_err(|err| err.to_string())
     }
     fn poll_now(&mut self) {
         *self.poll_now = true;
     }
     fn quit(&mut self) {
         self.cx.quit();
+    }
+    fn log(&mut self, message: &str) {
+        eprintln!("telima: tray: {message}");
     }
 }
 
@@ -146,7 +184,18 @@ fn wire_tray(app: App, cx: &mut gpui_kit::App) {
     cx.set_quit_mode(QuitMode::Explicit);
     {
         let app = app.clone();
-        REOPEN.with(|r| *r.borrow_mut() = Some(Rc::new(move |cx| show_main_window(&app, cx))));
+        REOPEN.with(|r| {
+            *r.borrow_mut() = Some(Rc::new(move |cx| {
+                let (mut tracked, mut poll_now) = (tray::Tracked::default(), false);
+                let mut shell = GpuiShell {
+                    app: &app,
+                    cx,
+                    tracked: &mut tracked,
+                    poll_now: &mut poll_now,
+                };
+                tray::show_window(&mut shell);
+            }))
+        });
     }
     let notice = Rc::new(RefCell::new(tray::CloseNotice::default()));
     cx.on_window_closed(move |cx, _| {
@@ -183,8 +232,27 @@ fn wire_tray(app: App, cx: &mut gpui_kit::App) {
                         profiles = list;
                     }
                 }
-                let busy_now = profiles.iter().any(|p| app.is_busy(&p.name));
+                let view = live_view(cx);
+                if let Some(selected) = view.as_ref().and_then(|v| v.read(cx).selected().cloned()) {
+                    MAIN.with(|m| m.borrow_mut().last_selected = Some(selected));
+                }
+                // The window knows the kind of the commands it started; the tray remembers
+                // the ones it sent while the window was closed.
+                let busy: HashMap<ProfileName, BusyOp> = profiles
+                    .iter()
+                    .filter_map(|p| {
+                        let shown = view.as_ref().and_then(|v| v.read(cx).busy_op(&p.name, cx));
+                        let sent =
+                            tracked.busy_op(&p.name, shown.is_some() || app.is_busy(&p.name));
+                        let op = match shown {
+                            Some(op @ BusyOp::Lifecycle(_)) => Some(op),
+                            _ => sent,
+                        };
+                        Some((p.name.clone(), op?))
+                    })
+                    .collect();
                 // A finished command changes the status: read it right away.
+                let busy_now = !busy.is_empty();
                 if was_busy && !busy_now {
                     poll_now = true;
                 }
@@ -196,13 +264,6 @@ fn wire_tray(app: App, cx: &mut gpui_kit::App) {
                     drop(app.refresh_profiles(move |r| *slot.lock().unwrap() = Some(r)));
                 }
                 let error = list_failed.then_some(TrayError::List);
-                let busy: HashMap<ProfileName, BusyOp> = profiles
-                    .iter()
-                    .filter_map(|p| {
-                        let op = tracked.busy_op(&p.name, app.is_busy(&p.name))?;
-                        Some((p.name.clone(), op))
-                    })
-                    .collect();
                 let model = tray_model(&profiles, |n| busy.get(n).copied(), error.as_ref());
                 handle.update(&model);
             });
@@ -211,6 +272,8 @@ fn wire_tray(app: App, cx: &mut gpui_kit::App) {
     .detach();
 }
 
+/// Colima adapter. When discovery fails, the CLI is pointed at a missing binary so every call
+/// surfaces `PortError::Unavailable` and the UI shows the not-installed state.
 fn colima(home: Option<&PathBuf>) -> ColimaCli<TokioRunner> {
     match ColimaCli::discover() {
         Ok(cli) => cli,
@@ -248,6 +311,8 @@ thread_local! {
     /// Dock click handler; set by `wire_tray`. GPUI runs it on the main thread.
     static REOPEN: RefCell<Option<ReopenFn>> =
         const { std::cell::RefCell::new(None) };
+    /// The main window; set whenever one is opened. GPUI windows live on the main thread.
+    static MAIN: RefCell<MainSlot> = RefCell::default();
 }
 
 fn main() {
