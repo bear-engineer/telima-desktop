@@ -415,3 +415,33 @@ fn tabs_show_counts_of_loaded_lists(cx: &mut TestAppContext) {
     let none = f.view.read_with(cx, |v, cx| v.tab_count(Tab::Volumes, cx));
     assert_eq!(none, None);
 }
+
+#[gpui_kit::test]
+fn inspector_shows_vm_type_and_mount_from_the_stored_spec(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| v.select("work", cx));
+    f.settle(cx);
+    let ins = f.view.read_with(cx, |v, _| v.inspector()).unwrap();
+    let value = |label: &str| {
+        ins.rows
+            .iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(value("VM 종류").as_deref(), Some("vz"));
+    assert_eq!(value("마운트").as_deref(), Some("virtiofs"));
+    // No spec stored for alpha: the values stay unknown.
+    f.view.update(cx, |v, cx| v.select("alpha", cx));
+    f.settle(cx);
+    let ins = f.view.read_with(cx, |v, _| v.inspector()).unwrap();
+    assert!(ins.rows.iter().any(|(l, v)| *l == "VM 종류" && v == "—"));
+}
+
+#[test]
+fn header_actions_carry_canvas_icons() {
+    use super::HeaderAction;
+    use crate::components::icons::Icon;
+    assert_eq!(HeaderAction::Start.icon(), Icon::Play);
+    assert_eq!(HeaderAction::Stop.icon(), Icon::Stop);
+    assert_eq!(HeaderAction::Restart.icon(), Icon::Restart);
+}

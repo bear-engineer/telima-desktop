@@ -186,3 +186,36 @@ fn init_registers_bundled_fonts_without_panicking(cx: &mut TestAppContext) {
         assert_eq!(&bytes[..4], &[0, 1, 0, 0], "{name} is a TrueType file");
     }
 }
+
+#[test]
+fn paragraph_splits_on_spaces_and_keeps_korean_words_whole() {
+    use super::paragraph::eojeols;
+    let words = eojeols("VM 디스크와 컨테이너, 볼륨이 함께 지워집니다.  되돌릴 수 없습니다.");
+    assert_eq!(
+        words,
+        [
+            "VM",
+            "디스크와",
+            "컨테이너,",
+            "볼륨이",
+            "함께",
+            "지워집니다.",
+            "되돌릴",
+            "수",
+            "없습니다."
+        ]
+    );
+    assert!(eojeols("  ").is_empty());
+}
+
+#[test]
+fn every_icon_has_strokes_inside_the_box() {
+    use super::icons::{BOX, Icon, strokes};
+    for i in [Icon::Plus, Icon::Play, Icon::Stop, Icon::Restart] {
+        let lines = strokes(i);
+        assert!(!lines.is_empty(), "{i:?}");
+        for (x, y) in lines.into_iter().flatten() {
+            assert!((0.0..=BOX).contains(&x) && (0.0..=BOX).contains(&y), "{i:?}");
+        }
+    }
+}
