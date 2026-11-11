@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
-use gpui_kit::{AppContext, Entity, TestAppContext};
+use gpui_kit::{AppContext, Entity, TestAppContext, px, size};
 use telima_app::runtime::{App, BoxFuture, DynEngine, Spawner};
 use telima_app::testing::{FakeEngine, FakeVm};
 use telima_core::container::{Container, ContainerState, Image, Volume};
@@ -12,6 +12,7 @@ use telima_core::profile::{HostOs, ProfileName};
 
 use super::{EnginePanel, ListState, StatusFilter};
 use crate::shell::Tab;
+use crate::theme::metric;
 
 #[derive(Default)]
 struct QueueSpawner(Mutex<Vec<BoxFuture<'static, ()>>>);
@@ -77,7 +78,7 @@ impl Fixture {
     }
 }
 
-fn fixture(cx: &mut TestAppContext, tab: Tab) -> Fixture {
+fn fake_app() -> (Arc<FakeEngine>, Arc<QueueSpawner>, Arc<AtomicBool>, App) {
     let engine = FakeEngine {
         log_lines: vec!["ready to accept connections".into()],
         ..Default::default()
@@ -112,6 +113,11 @@ fn fixture(cx: &mut TestAppContext, tab: Tab) -> Fixture {
         },
         spawner.clone(),
     );
+    (engine, spawner, fail, app)
+}
+
+fn fixture(cx: &mut TestAppContext, tab: Tab) -> Fixture {
+    let (engine, spawner, fail, app) = fake_app();
     let view = cx.new(|cx| EnginePanel::new(app, cx));
     let fx = Fixture {
         engine,
@@ -391,4 +397,52 @@ fn selecting_a_row_keeps_its_actions_visible(cx: &mut TestAppContext) {
         f.view.read_with(cx, |v, _| v.menu().map(str::to_owned)),
         None
     );
+}
+
+/// N1: at the window width (and at the main pane width between sidebar and inspector) the
+/// data columns must leave room for the row actions, inside the row and aligned with the header.
+#[gpui_kit::test]
+fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
+    let (_, spawner, _, app) = fake_app();
+    let (view, cx) = cx.add_window_view(|_, cx| EnginePanel::new(app, cx));
+    let profile = ProfileName::parse("dev").unwrap();
+    view.update(cx, |v, cx| v.set_target(Some(profile), Tab::Containers, cx));
+    let main = metric::WINDOW_W - metric::SIDEBAR - metric::INSPECTOR;
+    for w in [metric::WINDOW_W, main] {
+        cx.simulate_resize(size(px(w), px(metric::WINDOW_H)));
+        spawner.run_all();
+        view.update(cx, |v, cx| {
+            v.pump(cx);
+            v.select("c1", cx);
+        });
+        cx.run_until_parked();
+        let row = cx.debug_bounds("ctr-row-c1").expect("row rendered");
+        let actions = cx.debug_bounds("ctr-actions-c1").expect("actions rendered");
+        let head = cx
+            .debug_bounds("ctr-header-actions")
+            .expect("header slot rendered");
+        assert!(row.size.width <= px(w), "row {row:?} wider than {w}");
+        assert!(
+            actions.size.width >= px(metric::BTN_SM * 2.0),
+            "actions slot {actions:?} too narrow at {w}"
+        );
+        assert!(
+            actions.left() >= row.left() && actions.right() <= row.right(),
+            "actions {actions:?} outside row {row:?} at {w}"
+        );
+        assert_eq!(head.left(), actions.left(), "header misaligned at {w}");
+        assert_eq!(head.size.width, actions.size.width);
+        for col in 0..super::copy::CONTAINER_COLS.len() {
+            let name: &'static str = Box::leak(format!("ctr-cell-c1-{col}").into_boxed_str());
+            let hname: &'static str = Box::leak(format!("ctr-header-{col}").into_boxed_str());
+            let c = cx.debug_bounds(name).expect("cell rendered");
+            let h = cx.debug_bounds(hname).expect("header cell rendered");
+            assert!(c.size.width > px(0.), "column {col} has no width at {w}");
+            assert_eq!(
+                (c.left(), c.size.width),
+                (h.left(), h.size.width),
+                "column {col} at {w}"
+            );
+        }
+    }
 }

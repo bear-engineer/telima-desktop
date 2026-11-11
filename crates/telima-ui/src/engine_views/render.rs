@@ -67,7 +67,14 @@ fn cell(w: f32) -> Div {
         .text_ellipsis()
 }
 
-fn header(cols: &[(&'static str, f32)], lead: bool, p: &Palette) -> Div {
+/// Table header; `actions` reserves the row actions slot so columns line up with the rows.
+fn header(
+    key: &'static str,
+    cols: &[(&'static str, f32)],
+    lead: bool,
+    actions: bool,
+    p: &Palette,
+) -> Div {
     h_flex()
         .h(px(metric::ROW))
         .px(space(1))
@@ -78,7 +85,19 @@ fn header(cols: &[(&'static str, f32)], lead: bool, p: &Palette) -> Div {
         .text_size(px(font::SMALL.size))
         .text_color(hsla(p.text_2))
         .when(lead, |h| h.child(div().w(px(metric::ICON)).flex_none()))
-        .children(cols.iter().map(|(label, w)| cell(*w).child(*label)))
+        .children(cols.iter().enumerate().map(|(i, (label, w))| {
+            cell(*w)
+                .debug_selector(move || format!("{key}-header-{i}"))
+                .child(*label)
+        }))
+        .when(actions, |h| {
+            h.child(actions_slot().debug_selector(move || format!("{key}-header-actions")))
+        })
+}
+
+/// The row actions slot.
+fn actions_slot() -> Div {
+    h_flex().flex_1()
 }
 
 fn row(id: impl Into<ElementId>, selected: bool, p: &Palette) -> Stateful<Div> {
@@ -225,8 +244,9 @@ impl EnginePanel {
         let actions = row_actions(r.state);
         let (restart, more) = (r.id.clone(), r.id.clone());
         let open = self.menu.as_deref() == Some(r.id.as_str());
-        h_flex()
-            .flex_1()
+        let key = r.id.clone();
+        actions_slot()
+            .debug_selector(move || format!("ctr-actions-{key}"))
             .justify_end()
             .gap(space(0))
             .when(!(selected || open), |a| {
@@ -269,7 +289,13 @@ impl EnginePanel {
             let selected = self.selected.as_deref() == Some(r.id.as_str());
             let status = container_status(r);
             let select = r.id.clone();
+            let (key, id) = (r.id.clone(), r.id.clone());
+            let col = move |i: usize| {
+                let id = id.clone();
+                cell(cols[i].1).debug_selector(move || format!("ctr-cell-{id}-{i}"))
+            };
             row(SharedString::from(format!("ctr-{}", r.id)), selected, p)
+                .debug_selector(move || format!("ctr-row-{key}"))
                 .on_click(cx.listener(move |v, _, _, cx| v.select(&select, cx)))
                 .child(
                     div()
@@ -284,16 +310,16 @@ impl EnginePanel {
                         )),
                 )
                 .child(
-                    cell(cols[0].1)
+                    col(0)
                         .text_size(px(font::BODY.size))
                         .text_color(hsla(p.text))
                         .when(selected, |c| c.font_weight(FontWeight::MEDIUM))
                         .child(r.name.clone()),
                 )
-                .child(cell(cols[1].1).child(mono(short_image_id(&r.id), p.text_2)))
-                .child(cell(cols[2].1).child(mono(r.image.clone(), p.text)))
+                .child(col(1).child(mono(short_image_id(&r.id), p.text_2)))
+                .child(col(2).child(mono(r.image.clone(), p.text)))
                 .child(
-                    cell(cols[3].1)
+                    col(3)
                         .text_size(px(font::BODY.size))
                         .text_color(hsla(status_color(status, p)))
                         .when(status == Status::Error, |c| {
@@ -301,13 +327,13 @@ impl EnginePanel {
                         })
                         .child(r.status_text.clone()),
                 )
-                .child(cell(cols[4].1).child(text(copy::NONE, p.text_2)))
-                .child(cell(cols[5].1).child(text(copy::NONE, p.text_2)))
+                .child(col(4).child(text(copy::NONE, p.text_2)))
+                .child(col(5).child(text(copy::NONE, p.text_2)))
                 .child(self.row_actions_view(r, selected, p, cx))
         });
         v_flex()
             .px(space(4))
-            .child(header(&cols, true, p))
+            .child(header("ctr", &cols, true, true, p))
             .children(body)
             .into_any_element()
     }
@@ -330,7 +356,7 @@ impl EnginePanel {
         });
         v_flex()
             .px(space(4))
-            .child(header(&cols, false, p))
+            .child(header("tbl", &cols, false, false, p))
             .children(body)
             .into_any_element()
     }
@@ -356,7 +382,7 @@ impl EnginePanel {
         });
         v_flex()
             .px(space(4))
-            .child(header(&cols, false, p))
+            .child(header("tbl", &cols, false, false, p))
             .children(body)
             .into_any_element()
     }
