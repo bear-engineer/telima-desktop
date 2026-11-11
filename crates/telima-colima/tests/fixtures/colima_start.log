@@ -1,0 +1,5 @@
+time="2026-11-11T10:00:00+09:00" level=info msg="starting colima profile=telima-test-a"
+time="2026-11-11T10:00:02+09:00" level=info msg="creating VM with vz type"
+time="2026-11-11T10:00:05+09:00" level=warn msg="mount type \"sshfs\" is slower than virtiofs"
+time="2026-11-11T10:00:09+09:00" level=error msg="failed to start: exit status 1"
+Plain progress line without a prefix

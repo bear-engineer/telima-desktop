@@ -11,3 +11,4 @@ AuthKey_*.p8
 *.pem
 *.key
 __pycache__/
+!crates/telima-colima/tests/fixtures/*.log
