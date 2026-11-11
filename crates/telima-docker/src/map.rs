@@ -1,6 +1,8 @@
 //! Pure mappings from bollard Docker Engine API models to telima-core entities.
 //! No I/O here: every function takes an already-decoded engine model.
 
+use std::collections::HashMap;
+
 use bollard::container::LogOutput;
 use bollard::models::{
     ContainerSummary, ContainerSummaryStateEnum, ImagePruneResponse, ImageSummary,
@@ -59,6 +61,30 @@ pub fn map_volume(volume: &Volume) -> DomainVolume {
         size_bytes: usage.and_then(|u| known_count(u.size)),
         ref_count: usage.and_then(|u| known_count(u.ref_count)),
     }
+}
+
+/// Volume list merged with per-name usage from `df`, as `(name, size, ref_count)`.
+/// The list endpoint leaves usage empty, so `df` supplies it. Usage already on a
+/// listed volume wins; a name missing from `df` stays unknown.
+pub fn map_volumes(list: &[Volume], df: &[(String, i64, i64)]) -> Vec<DomainVolume> {
+    let by_name: HashMap<&str, (i64, i64)> = df
+        .iter()
+        .map(|(name, size, refs)| (name.as_str(), (*size, *refs)))
+        .collect();
+    list.iter()
+        .map(|volume| {
+            let usage = volume
+                .usage_data
+                .as_ref()
+                .map(|u| (u.size, u.ref_count))
+                .or_else(|| by_name.get(volume.name.as_str()).copied());
+            DomainVolume {
+                name: volume.name.clone(),
+                size_bytes: usage.and_then(|(size, _)| known_count(size)),
+                ref_count: usage.and_then(|(_, refs)| known_count(refs)),
+            }
+        })
+        .collect()
 }
 
 /// System df response to disk usage per section; missing sections count as zero.

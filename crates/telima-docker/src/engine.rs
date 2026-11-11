@@ -161,12 +161,11 @@ impl ContainerEngine for DockerEngine {
             .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
             .await
             .map_err(map_error)?;
-        Ok(response
-            .volumes
-            .unwrap_or_default()
-            .iter()
-            .map(map::map_volume)
-            .collect())
+        let usage = self.volume_usage().await;
+        Ok(map::map_volumes(
+            &response.volumes.unwrap_or_default(),
+            &usage,
+        ))
     }
 
     async fn remove_volume(&self, name: &str) -> PortResult<()> {
@@ -207,6 +206,35 @@ impl ContainerEngine for DockerEngine {
                 },
             }
         }
+    }
+}
+
+impl DockerEngine {
+    /// Per-volume `(name, size, ref_count)` from `GET /system/df` (type=volume).
+    /// The list endpoint carries no usage, so this is the only source. A failed
+    /// `df` yields no usage: the volume list is still returned, with unknown sizes.
+    async fn volume_usage(&self) -> Vec<(String, i64, i64)> {
+        let options = bollard::query_parameters::DataUsageOptionsBuilder::default()
+            ._type(vec!["volume".to_owned()])
+            .build();
+        let Ok(response) = self.docker.df(Some(options)).await else {
+            return Vec::new();
+        };
+        response
+            .volume_usage
+            .and_then(|usage| usage.items)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|item| {
+                let name = item.get("Name")?.as_str()?.to_owned();
+                let usage = item.get("UsageData")?;
+                Some((
+                    name,
+                    usage.get("Size")?.as_i64()?,
+                    usage.get("RefCount")?.as_i64()?,
+                ))
+            })
+            .collect()
     }
 }
 
