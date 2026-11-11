@@ -100,18 +100,20 @@ pub fn field_row(
                 )
                 .child(control),
         )
-        .children(hint.map(|h| {
-            div()
-                .pl(px(metric::FIELD_LABEL + metric::SPACE[2]))
-                .text_color(hsla(p.text_2))
-                .text_size(px(font::SMALL.size))
-                .child(paragraph(h))
-        }))
+        .children(hint.map(|h| hint_line(h, p).pl(px(metric::FIELD_LABEL + metric::SPACE[2]))))
         .children(errors.into_iter().enumerate().map(|(i, e)| {
             div()
                 .pl(px(metric::FIELD_LABEL + metric::SPACE[2]))
                 .child(error_line(format!("field-error-{label}-{i}"), e, p))
         }))
+}
+
+/// Secondary note in small muted text (field hints, consequences, restart notice).
+pub fn hint_line(text: impl Into<SharedString>, p: &Palette) -> Div {
+    div()
+        .text_color(hsla(p.text_2))
+        .text_size(px(font::SMALL.size))
+        .child(paragraph(text.into()))
 }
 
 /// Error message led by the status triangle (L4), wrapping between words (N5).

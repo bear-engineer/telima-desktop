@@ -7,11 +7,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use telima_app::AppError;
 use telima_app::runtime::App as Telima;
+use telima_app::view::daily::{MOUNTS_EMPTY, MOUNTS_HELP, kubernetes_copy, restart_required_text};
 use telima_app::view::notice::error_text;
 use telima_core::profile::{HostOs, Mount, MountType, ProfileName, ProfileSpec, Runtime, VmType};
 use telima_core::rules::{self, RuleViolation};
 
-use super::widgets::{Tone, button, edit_text, error_line, field_row, text_box};
+use super::widgets::{Tone, button, edit_text, error_line, field_row, hint_line, text_box};
 use crate::components::dialog::fade_in;
 use crate::components::paragraph::paragraph;
 use crate::components::segmented::segmented;
@@ -23,6 +24,18 @@ use crate::theme::{font, metric};
 const NEW_CPUS: u32 = 2;
 const NEW_MEMORY_GIB: u32 = 2;
 const NEW_DISK_GIB: u32 = 100;
+
+/// Switch ids for the mount rows (the shared switch takes a static id); also the row cap.
+const MOUNT_SWITCH_IDS: [&str; 8] = [
+    "mount-writable-0",
+    "mount-writable-1",
+    "mount-writable-2",
+    "mount-writable-3",
+    "mount-writable-4",
+    "mount-writable-5",
+    "mount-writable-6",
+    "mount-writable-7",
+];
 
 /// Form fields. `key` matches the field names used by `rules`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +49,8 @@ pub enum Field {
     Runtime,
     Rosetta,
     NetworkAddress,
+    Mounts,
+    Kubernetes,
 }
 
 impl Field {
@@ -50,10 +65,12 @@ impl Field {
             Field::Runtime => "runtime",
             Field::Rosetta => "rosetta",
             Field::NetworkAddress => "network_address",
+            Field::Mounts => "mounts",
+            Field::Kubernetes => "kubernetes",
         }
     }
 
-    const ALL: [Field; 9] = [
+    const ALL: [Field; 11] = [
         Field::Name,
         Field::Cpus,
         Field::Memory,
@@ -63,6 +80,8 @@ impl Field {
         Field::Runtime,
         Field::Rosetta,
         Field::NetworkAddress,
+        Field::Mounts,
+        Field::Kubernetes,
     ];
 
     fn from_key(key: &str) -> Option<Field> {
@@ -79,11 +98,10 @@ impl Field {
                 Field::from_key(field).unwrap_or(Field::Name)
             }
             RuleViolation::DiskShrink { .. } => Field::Disk,
-            // Mount and Kubernetes fields get their own editor rows in L6; until then
-            // their violations are shown on the form-wide error line.
-            RuleViolation::MountPathNotAbsolute(_)
-            | RuleViolation::DuplicateMount(_)
-            | RuleViolation::KubernetesNeedsDocker(_) => Field::Name,
+            RuleViolation::MountPathNotAbsolute(_) | RuleViolation::DuplicateMount(_) => {
+                Field::Mounts
+            }
+            RuleViolation::KubernetesNeedsDocker(_) => Field::Kubernetes,
         }
     }
 }
@@ -227,6 +245,8 @@ pub struct ProfileEditor {
     progress: Vec<String>,
     inbox: Inbox,
     name_focus: FocusHandle,
+    /// One per `draft.mounts` row, same order.
+    mount_focus: Vec<FocusHandle>,
     _poll: Task<()>,
 }
 
@@ -245,6 +265,7 @@ impl ProfileEditor {
     }
 
     fn with(app: Telima, os: HostOs, mode: Mode, draft: Draft, cx: &mut Context<Self>) -> Self {
+        let mount_focus = draft.mounts.iter().map(|_| cx.focus_handle()).collect();
         Self {
             app,
             os,
@@ -258,6 +279,7 @@ impl ProfileEditor {
             progress: Vec::new(),
             inbox: Inbox::default(),
             name_focus: cx.focus_handle(),
+            mount_focus,
             _poll: super::poll(cx, Self::pump),
         }
     }
@@ -392,6 +414,59 @@ impl ProfileEditor {
 
     pub fn set_network_address(&mut self, on: bool, cx: &mut Context<Self>) {
         self.change(Field::NetworkAddress, cx, |d| d.network_address = on);
+    }
+
+    /// Adds an empty read-only mount row (up to the row cap).
+    pub fn add_mount(&mut self, cx: &mut Context<Self>) {
+        if self.draft.mounts.len() >= MOUNT_SWITCH_IDS.len() || self.saving {
+            return;
+        }
+        self.mount_focus.push(cx.focus_handle());
+        self.change(Field::Mounts, cx, |d| {
+            d.mounts.push(Mount {
+                path: String::new(),
+                writable: false,
+            })
+        });
+    }
+
+    pub fn remove_mount(&mut self, i: usize, cx: &mut Context<Self>) {
+        if i >= self.draft.mounts.len() || self.saving {
+            return;
+        }
+        self.mount_focus.remove(i);
+        self.change(Field::Mounts, cx, |d| {
+            d.mounts.remove(i);
+        });
+    }
+
+    pub fn set_mount_path(&mut self, i: usize, path: &str, cx: &mut Context<Self>) {
+        self.change(Field::Mounts, cx, |d| {
+            if let Some(m) = d.mounts.get_mut(i) {
+                m.path = path.to_owned();
+            }
+        });
+    }
+
+    pub fn set_mount_writable(&mut self, i: usize, writable: bool, cx: &mut Context<Self>) {
+        self.change(Field::Mounts, cx, |d| {
+            if let Some(m) = d.mounts.get_mut(i) {
+                m.writable = writable;
+            }
+        });
+    }
+
+    pub fn set_kubernetes(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.change(Field::Kubernetes, cx, |d| d.kubernetes = on);
+    }
+
+    /// Edit only: which saved changes need a restart (`rules::restart_required`), as app copy.
+    pub fn restart_hint(&self) -> Option<String> {
+        let Mode::Edit { current } = &self.mode else {
+            return None;
+        };
+        let next = self.draft.spec(current.name.clone());
+        restart_required_text(&rules::restart_required(current, &next))
     }
 
     /// Runs the rules. Returns the spec when it may be sent.
@@ -598,6 +673,89 @@ impl ProfileEditor {
     }
 }
 
+impl ProfileEditor {
+    /// Path box, writable switch and remove button per mount, then the add button.
+    fn mounts_editor(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+        p: &crate::theme::Palette,
+    ) -> Div {
+        let enabled = !self.saving;
+        let rows = self.draft.mounts.iter().enumerate().map(|(i, m)| {
+            let focus = self.mount_focus[i].clone();
+            let path_box = text_box(
+                SharedString::from(format!("mount-path-{i}")),
+                &m.path,
+                "/Users/me/src",
+                !enabled,
+                &focus,
+                window,
+                p,
+            )
+            .flex_1()
+            .when(enabled, |b| {
+                b.on_click(cx.listener(move |_, _, window, cx| window.focus(&focus, cx)))
+                    .on_key_down(cx.listener(move |v, ev: &KeyDownEvent, _, cx| {
+                        let mut text = v.draft.mounts[i].path.clone();
+                        if edit_text(&mut text, ev) {
+                            v.set_mount_path(i, &text, cx);
+                        }
+                    }))
+            });
+            let this = cx.entity().downgrade();
+            let writable = switch(MOUNT_SWITCH_IDS[i], m.writable, p, move |next, _, cx| {
+                if enabled {
+                    let _ = this.update(cx, |v, cx| v.set_mount_writable(i, next, cx));
+                }
+            });
+            let mode = telima_app::view::daily::mount_rows(std::slice::from_ref(m))[0].mode;
+            let remove_id = format!("mount-remove-{i}");
+            h_flex()
+                .gap(space(1))
+                .child(path_box)
+                .child(writable)
+                .child(
+                    div()
+                        .min_w(px(metric::FIELD_NUM))
+                        .text_size(px(font::SMALL.size))
+                        .text_color(hsla(p.text_2))
+                        .child(mode),
+                )
+                .child(
+                    button(
+                        SharedString::from(remove_id.clone()),
+                        "−",
+                        enabled,
+                        Tone::Default,
+                        p,
+                    )
+                    .debug_selector(move || remove_id.clone())
+                    .when(enabled, |b| {
+                        b.on_click(cx.listener(move |v, _, _, cx| v.remove_mount(i, cx)))
+                    }),
+                )
+        });
+        let can_add = enabled && self.draft.mounts.len() < MOUNT_SWITCH_IDS.len();
+        v_flex()
+            .flex_1()
+            .gap(space(1))
+            .when(self.draft.mounts.is_empty(), |d| {
+                d.child(hint_line(MOUNTS_EMPTY, p))
+            })
+            .children(rows)
+            .child(
+                h_flex().child(
+                    button("mount-add", "+ 추가", can_add, Tone::Default, p)
+                        .debug_selector(|| "mount-add".to_string())
+                        .when(can_add, |b| {
+                            b.on_click(cx.listener(|v, _, _, cx| v.add_mount(cx)))
+                        }),
+                ),
+            )
+    }
+}
+
 impl Render for ProfileEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(window);
@@ -627,6 +785,7 @@ impl Render for ProfileEditor {
         });
         let lock_hint = |f: Field| self.is_locked(f).then_some("만든 뒤에는 바꿀 수 없습니다");
         let d = self.draft.clone();
+        let k8s = kubernetes_copy(d.runtime);
 
         let rows = v_flex()
             .gap(space(2))
@@ -752,6 +911,27 @@ impl Render for ProfileEditor {
                 self.violations_for(Field::NetworkAddress),
                 p,
             ))
+            .child(field_row(
+                "디렉터리",
+                self.mounts_editor(window, cx, p),
+                Some(MOUNTS_HELP),
+                self.violations_for(Field::Mounts),
+                p,
+            ))
+            .child(field_row(
+                "Kubernetes",
+                self.toggle(
+                    "kubernetes",
+                    d.kubernetes,
+                    k8s.available,
+                    Self::set_kubernetes,
+                    cx,
+                    p,
+                ),
+                Some(k8s.disabled_reason.unwrap_or(k8s.description)),
+                self.violations_for(Field::Kubernetes),
+                p,
+            ))
             .children(
                 self.violations_for(Field::Runtime)
                     .into_iter()
@@ -794,6 +974,10 @@ impl Render for ProfileEditor {
             .text_color(hsla(p.text))
             .font_family(font::SANS)
             .child(rows)
+            .children(
+                self.restart_hint()
+                    .map(|h| hint_line(h, p).debug_selector(|| "restart-hint".to_string())),
+            )
             .children(self.save_error.as_ref().map(|e| {
                 div()
                     .p(space(2))

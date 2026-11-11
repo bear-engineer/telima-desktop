@@ -6,13 +6,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use telima_app::AppError;
 use telima_app::runtime::App as Telima;
-use telima_app::view::Confirm;
+use telima_app::view::daily::{delete_consequence, delete_data_option};
 use telima_app::view::notice::error_text;
-use telima_core::profile::ProfileName;
+use telima_app::view::{Confirm, confirm_delete_profile};
+use telima_core::profile::{DeleteOptions, ProfileName};
 
-use super::widgets::{Tone, button, edit_text, error_line, text_box};
+use super::widgets::{Tone, button, edit_text, error_line, hint_line, text_box};
 use crate::components::dialog::{dialog_frame, fade_in};
 use crate::components::paragraph::paragraph;
+use crate::components::switch::switch;
 use crate::style::{hsla, palette, space};
 use crate::theme::{font, metric};
 
@@ -28,6 +30,9 @@ pub struct DeleteConfirm {
     app: Telima,
     name: ProfileName,
     copy: Confirm,
+    options: DeleteOptions,
+    /// Container count and volume sizes, so the copy can be rebuilt when the option flips.
+    facts: Option<(usize, Vec<Option<u64>>)>,
     typed: String,
     deleting: bool,
     error: Option<String>,
@@ -47,6 +52,8 @@ impl DeleteConfirm {
             app,
             name,
             copy,
+            options: DeleteOptions::default(),
+            facts: None,
             typed: String::new(),
             deleting: false,
             error: None,
@@ -55,6 +62,32 @@ impl DeleteConfirm {
             focus_on_open: true,
             _poll: super::poll(cx, Self::pump),
         }
+    }
+
+    /// The facts `copy` was built from; with them the body and button follow the data switch.
+    pub fn with_facts(mut self, containers: usize, volume_sizes: Vec<Option<u64>>) -> Self {
+        self.facts = Some((containers, volume_sizes));
+        self
+    }
+
+    pub fn copy(&self) -> &Confirm {
+        &self.copy
+    }
+
+    pub fn options(&self) -> DeleteOptions {
+        self.options
+    }
+
+    /// "데이터 디스크도 삭제" (off by default).
+    pub fn set_delete_data(&mut self, data: bool, cx: &mut Context<Self>) {
+        if self.deleting {
+            return;
+        }
+        self.options.data = data;
+        if let Some((containers, sizes)) = &self.facts {
+            self.copy = confirm_delete_profile(&self.name, *containers, sizes, self.options);
+        }
+        cx.notify();
     }
 
     pub fn typed(&self) -> &str {
@@ -98,7 +131,7 @@ impl DeleteConfirm {
         self.app.delete_profile(
             self.name.clone(),
             self.typed.clone(),
-            telima_core::profile::DeleteOptions::default(),
+            self.options,
             move |r| inbox.lock().unwrap().push(r),
         );
         cx.notify();
@@ -158,6 +191,28 @@ impl Render for DeleteConfirm {
             }
         }));
 
+        let option = delete_data_option();
+        let this = cx.entity().downgrade();
+        let deleting = self.deleting;
+        let data_switch = switch("delete-data", self.options.data, p, move |next, _, cx| {
+            if !deleting {
+                let _ = this.update(cx, |v, cx| v.set_delete_data(next, cx));
+            }
+        });
+        let data_row = v_flex()
+            .gap(space(0))
+            .child(
+                h_flex()
+                    .gap(space(2))
+                    .child(data_switch)
+                    .child(div().text_size(px(font::BODY.size)).child(option.label)),
+            )
+            .child(hint_line(option.description, p))
+            .child(
+                hint_line(delete_consequence(self.options), p)
+                    .when(self.options.data, |d| d.text_color(hsla(p.err))),
+            );
+
         // Escape bubbles here from anywhere inside the frame, not only from the input.
         let frame = dialog_frame(metric::DIALOG_W, p)
             .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
@@ -179,6 +234,7 @@ impl Render for DeleteConfirm {
                     .text_color(hsla(p.text_2))
                     .child(paragraph(&self.copy.body)),
             )
+            .child(data_row)
             .child(
                 v_flex()
                     .gap(space(1))
