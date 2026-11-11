@@ -9,7 +9,8 @@ use telima_app::testing::{FakeEngine, FakeVm};
 use telima_app::view::confirm_delete_profile;
 use telima_core::profile::{HostOs, MountType, ProfileName, ProfileSpec, Runtime, VmType};
 
-use super::{DeleteConfirm, Field, ProfileEditor, StartProgress};
+use super::progress::CURRENT_STEP_FILL;
+use super::{DeleteConfirm, DeleteEvent, Field, ProfileEditor, StartProgress};
 
 #[derive(Default)]
 struct QueueSpawner(Mutex<Vec<BoxFuture<'static, ()>>>);
@@ -239,4 +240,63 @@ fn switch_and_segment_clicks_change_the_draft(cx: &mut TestAppContext) {
     cx.simulate_click(b.center(), Modifiers::none());
     cx.run_until_parked();
     assert_ne!(form.read_with(cx, |f, _| f.draft().mount_type), before);
+}
+
+#[gpui_kit::test]
+fn delete_dialog_takes_focus_on_open_and_escape_closes_it(cx: &mut TestAppContext) {
+    // N3: no click first; the dialog must own focus so Escape reaches it.
+    let (_, _, app) = setup(&[]);
+    let name = ProfileName::parse("dev").unwrap();
+    let copy = confirm_delete_profile(&name, 0, 0, 0);
+    let (dialog, cx) = cx.add_window_view(|_, cx| DeleteConfirm::new(app, name, copy, cx));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&dialog, move |_, ev: &DeleteEvent, _| {
+            sink.lock().unwrap().push(ev.clone())
+        })
+        .detach()
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.update(|window, cx| dialog.read(cx).has_focus(window)),
+        "the dialog must take focus when it opens"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(*events.lock().unwrap(), [DeleteEvent::Cancelled]);
+}
+
+#[gpui_kit::test]
+fn current_start_step_bar_is_partly_filled(cx: &mut TestAppContext) {
+    // M8: Starting.dc.html draws the current step's bar 45% filled in busy.
+    let (_, spawner, app) = setup(&["booting vm"]);
+    let name = ProfileName::parse("telima-test-a").unwrap();
+    let (log, cx) = cx.add_window_view(|_, cx| StartProgress::new(app, name, Lifecycle::Start, cx));
+    spawner.run_all();
+    log.update(cx, |l, cx| l.pump(cx));
+    cx.run_until_parked();
+    let current = log.read_with(cx, |l, _| l.step_progress().current);
+    assert_eq!(current, 3);
+    let ratio = |i: usize| {
+        let track = cx.debug_bounds(&format!("step-track-{i}")).expect("track");
+        let fill = cx.debug_bounds(&format!("step-fill-{i}")).expect("fill");
+        f32::from(fill.size.width) / f32::from(track.size.width)
+    };
+    assert!((ratio(current - 1) - CURRENT_STEP_FILL).abs() < 0.01);
+    assert!((ratio(0) - 1.0).abs() < 0.01, "done steps are full");
+    assert!(ratio(current) < 0.01, "pending steps are empty");
+}
+
+#[test]
+fn profile_form_draws_the_error_triangle_shape_not_a_glyph() {
+    // L4: errors use components::status (Triangle), not a text glyph.
+    for (file, src) in [
+        ("delete.rs", include_str!("delete.rs")),
+        ("editor.rs", include_str!("editor.rs")),
+        ("widgets.rs", include_str!("widgets.rs")),
+        ("progress.rs", include_str!("progress.rs")),
+    ] {
+        assert!(!src.contains('\u{25B2}'), "{file} still draws the ▲ glyph");
+    }
 }
