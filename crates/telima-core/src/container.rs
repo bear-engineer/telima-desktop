@@ -14,8 +14,15 @@ pub enum ContainerState {
 impl ContainerState {
     /// Map an engine state word (`running`, `exited`, ...) to a state.
     pub fn parse(raw: &str) -> Self {
-        let _ = raw;
-        todo!()
+        match raw.to_ascii_lowercase().as_str() {
+            "created" => Self::Created,
+            "running" => Self::Running,
+            "paused" => Self::Paused,
+            "restarting" => Self::Restarting,
+            "exited" => Self::Exited,
+            "dead" => Self::Dead,
+            _ => Self::Other,
+        }
     }
 }
 
@@ -40,7 +47,7 @@ pub struct Image {
 impl Image {
     /// An image with no tag (shown as `<none>`).
     pub fn is_dangling(&self) -> bool {
-        todo!()
+        self.tags.iter().all(|t| t == "<none>:<none>")
     }
 }
 
@@ -55,7 +62,7 @@ pub struct Volume {
 impl Volume {
     /// True only when the engine reports zero references; unknown counts are treated as in use.
     pub fn is_unused(&self) -> bool {
-        todo!()
+        self.ref_count == Some(0)
     }
 }
 

@@ -41,8 +41,13 @@ impl ProfileName {
     pub const MAX_LEN: usize = 32;
 
     pub fn parse(raw: &str) -> Result<Self, InvalidProfileName> {
-        let _ = raw;
-        todo!()
+        let valid_chars = raw
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if raw.is_empty() || raw.len() > Self::MAX_LEN || raw.starts_with('-') || !valid_chars {
+            return Err(InvalidProfileName(raw.to_owned()));
+        }
+        Ok(Self(raw.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {

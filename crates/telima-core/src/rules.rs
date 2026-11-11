@@ -25,20 +25,55 @@ pub enum RuleViolation {
 
 /// VM types offered on `os`.
 pub fn vm_types(os: HostOs) -> &'static [VmType] {
-    let _ = os;
-    todo!()
+    match os {
+        HostOs::MacOs => &[VmType::Vz, VmType::Qemu, VmType::Krunkit],
+        HostOs::Linux => &[VmType::Qemu],
+    }
 }
 
 /// Mount types offered for `vm`.
 pub fn mount_types(vm: VmType) -> &'static [MountType] {
-    let _ = vm;
-    todo!()
+    match vm {
+        VmType::Vz | VmType::Krunkit => &[MountType::Virtiofs, MountType::Sshfs, MountType::NineP],
+        VmType::Qemu => &[MountType::Sshfs, MountType::NineP],
+    }
 }
+
+/// Runtimes this app can manage. Colima offers more; the UI shows only these.
+pub const SUPPORTED_RUNTIMES: &[Runtime] = &[Runtime::Docker];
+
+/// Smallest accepted value for each resource field.
+const MIN_CPUS: u32 = 1;
+const MIN_MEMORY_GIB: u32 = 1;
+const MIN_DISK_GIB: u32 = 1;
 
 /// Check a spec for a new profile.
 pub fn validate_new(spec: &ProfileSpec, os: HostOs) -> Result<(), Vec<RuleViolation>> {
-    let _ = (spec, os);
-    todo!()
+    let mut errs = Vec::new();
+    if !vm_types(os).contains(&spec.vm_type) {
+        errs.push(RuleViolation::VmTypeUnavailable(spec.vm_type));
+    } else if !mount_types(spec.vm_type).contains(&spec.mount_type) {
+        errs.push(RuleViolation::MountTypeUnavailable {
+            vm: spec.vm_type,
+            mount: spec.mount_type,
+        });
+    }
+    if spec.rosetta && !(os == HostOs::MacOs && spec.vm_type == VmType::Vz) {
+        errs.push(RuleViolation::RosettaUnavailable);
+    }
+    if !SUPPORTED_RUNTIMES.contains(&spec.runtime) {
+        errs.push(RuleViolation::RuntimeUnsupported(spec.runtime));
+    }
+    for (field, value, min) in [
+        ("cpus", spec.cpus, MIN_CPUS),
+        ("memory_gib", spec.memory_gib, MIN_MEMORY_GIB),
+        ("disk_gib", spec.disk_gib, MIN_DISK_GIB),
+    ] {
+        if value < min {
+            errs.push(RuleViolation::TooSmall { field, min });
+        }
+    }
+    if errs.is_empty() { Ok(()) } else { Err(errs) }
 }
 
 /// Check an edit of an existing profile (`current` → `next`).
@@ -47,9 +82,36 @@ pub fn validate_update(
     next: &ProfileSpec,
     os: HostOs,
 ) -> Result<(), Vec<RuleViolation>> {
-    let _ = (current, next, os);
-    todo!()
+    let mut errs = Vec::new();
+    for (field, changed) in IMMUTABLE_FIELDS {
+        if changed(current, next) {
+            errs.push(RuleViolation::Immutable(field));
+        }
+    }
+    if next.disk_gib < current.disk_gib {
+        errs.push(RuleViolation::DiskShrink {
+            from: current.disk_gib,
+            to: next.disk_gib,
+        });
+    }
+    if let Err(more) = validate_new(next, os) {
+        for e in more {
+            if !errs.contains(&e) {
+                errs.push(e);
+            }
+        }
+    }
+    if errs.is_empty() { Ok(()) } else { Err(errs) }
 }
+
+type FieldChanged = fn(&ProfileSpec, &ProfileSpec) -> bool;
+
+/// Fields Colima cannot change after creation. The UI locks exactly these.
+pub const IMMUTABLE_FIELDS: &[(&str, FieldChanged)] = &[
+    ("name", |a, b| a.name != b.name),
+    ("vm_type", |a, b| a.vm_type != b.vm_type),
+    ("runtime", |a, b| a.runtime != b.runtime),
+];
 
 #[cfg(test)]
 mod tests {
