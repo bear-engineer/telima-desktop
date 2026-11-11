@@ -714,3 +714,176 @@ fn footer_keeps_the_last_known_docker_version_for_a_stopped_profile(cx: &mut Tes
     let footer = f.view.read_with(cx, |v, _| v.version_footer());
     assert_eq!(footer.docker, "Docker 29.5.2");
 }
+
+// --- telima-l6p item 1: a failed create keeps its sidebar row ---
+
+/// [`FakeVm`] whose `create` writes its log and then fails without adding the profile,
+/// like `colima start` for a new profile that never reaches `colima ls`.
+struct CreateFails(Arc<FakeVm>);
+
+impl telima_core::ports::VmManager for CreateFails {
+    async fn list(&self) -> telima_core::ports::PortResult<Vec<Profile>> {
+        self.0.list().await
+    }
+    async fn spec(&self, name: &ProfileName) -> telima_core::ports::PortResult<ProfileSpec> {
+        self.0.spec(name).await
+    }
+    async fn create(
+        &self,
+        spec: &ProfileSpec,
+        progress: telima_core::ports::ProgressSink<'_>,
+    ) -> telima_core::ports::PortResult<()> {
+        self.0.create(spec, progress).await?;
+        Err(telima_core::ports::PortError::Failed(
+            "error starting vm".into(),
+        ))
+    }
+    async fn start(
+        &self,
+        name: &ProfileName,
+        progress: telima_core::ports::ProgressSink<'_>,
+    ) -> telima_core::ports::PortResult<()> {
+        self.0.start(name, progress).await
+    }
+    async fn stop(
+        &self,
+        name: &ProfileName,
+        progress: telima_core::ports::ProgressSink<'_>,
+    ) -> telima_core::ports::PortResult<()> {
+        self.0.stop(name, progress).await
+    }
+    async fn restart(
+        &self,
+        name: &ProfileName,
+        progress: telima_core::ports::ProgressSink<'_>,
+    ) -> telima_core::ports::PortResult<()> {
+        self.0.restart(name, progress).await
+    }
+    async fn update(&self, spec: &ProfileSpec) -> telima_core::ports::PortResult<()> {
+        self.0.update(spec).await
+    }
+    async fn delete(
+        &self,
+        name: &ProfileName,
+        options: telima_core::profile::DeleteOptions,
+    ) -> telima_core::ports::PortResult<()> {
+        self.0.delete(name, options).await
+    }
+    async fn colima_version(&self) -> telima_core::ports::PortResult<ColimaVersion> {
+        self.0.colima_version().await
+    }
+    async fn runtime_info(
+        &self,
+        name: &ProfileName,
+    ) -> telima_core::ports::PortResult<RuntimeInfo> {
+        self.0.runtime_info(name).await
+    }
+    async fn prune_cache(&self) -> telima_core::ports::PortResult<()> {
+        self.0.prune_cache().await
+    }
+}
+
+/// Shell whose profile create fails (see [`CreateFails`]).
+fn fixture_create_fails(cx: &mut TestAppContext) -> Fixture {
+    let (vm, spawner, asked, _) = parts(|_| {});
+    let app = App::new(
+        Arc::new(CreateFails(vm.clone())),
+        HostOs::MacOs,
+        |_: &ProfileName| {
+            let engine: Arc<dyn DynEngine> = Arc::new(FakeEngine::default());
+            Ok(engine)
+        },
+        spawner.clone(),
+    );
+    let view = cx.new(|cx| MainView::new(app, cx));
+    let f = Fixture {
+        vm,
+        spawner,
+        asked,
+        view,
+    };
+    f.settle(cx);
+    f
+}
+
+fn row_kind(
+    f: &Fixture,
+    cx: &mut TestAppContext,
+    name: &str,
+) -> Option<telima_app::view::StatusKind> {
+    f.view
+        .read_with(cx, |v, _| v.rows())
+        .into_iter()
+        .find(|r| r.name == name)
+        .map(|r| r.kind)
+}
+
+#[gpui_kit::test]
+fn failed_create_keeps_its_row_and_log_until_the_log_is_closed(cx: &mut TestAppContext) {
+    use telima_app::view::StatusKind;
+
+    let f = fixture_create_fails(cx);
+    f.view.update(cx, |v, cx| v.new_profile(cx));
+    let editor = f.view.read_with(cx, |v, _| v.editor().cloned()).unwrap();
+    editor.update(cx, |e, cx| {
+        e.set_name("telima-test-fail", cx);
+        e.submit(cx);
+    });
+    // Create fails, then the refresh it triggers answers without the new profile.
+    f.settle(cx);
+    f.settle(cx);
+    assert!(
+        f.vm.calls()
+            .contains(&"create telima-test-fail".to_string())
+    );
+    assert!(
+        !f.vm
+            .profiles
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.name.as_str() == "telima-test-fail"),
+        "colima does not list the failed profile"
+    );
+
+    assert_eq!(
+        row_kind(&f, cx, "telima-test-fail"),
+        Some(StatusKind::Error),
+        "the failed create keeps its sidebar row, in the error state"
+    );
+    assert_eq!(
+        f.view
+            .read_with(cx, |v, _| v.selected().map(|n| n.to_string()))
+            .as_deref(),
+        Some("telima-test-fail"),
+        "the failed row stays selected"
+    );
+    let progress = f
+        .view
+        .read_with(cx, |v, _| v.progress().cloned())
+        .expect("the failure log stays visible");
+    assert!(progress.read_with(cx, |p, _| matches!(
+        p.end(),
+        Some(crate::profile_form::ProgressEnd::Failed(_))
+    )));
+    assert_eq!(f.view.read_with(cx, |v, _| v.screen()), Screen::Profile);
+
+    // Another refresh (the poll) does not drop it either.
+    f.view.update(cx, |v, _| v.refresh());
+    f.settle(cx);
+    assert_eq!(
+        row_kind(&f, cx, "telima-test-fail"),
+        Some(StatusKind::Error)
+    );
+
+    // Closing the log drops the row; selection moves to a listed profile.
+    f.view.update(cx, |v, cx| v.close_progress(cx));
+    f.settle(cx);
+    assert_eq!(row_kind(&f, cx, "telima-test-fail"), None);
+    assert!(f.view.read_with(cx, |v, _| v.progress().is_none()));
+    let selected = f
+        .view
+        .read_with(cx, |v, _| v.selected().map(|n| n.to_string()));
+    assert_ne!(selected.as_deref(), Some("telima-test-fail"));
+    assert!(selected.is_some());
+}
