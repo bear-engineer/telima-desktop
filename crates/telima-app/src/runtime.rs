@@ -827,6 +827,34 @@ mod tests {
     }
 
     #[test]
+    fn profile_spec_is_read_from_the_vm_on_the_spawner() {
+        let f = mac();
+        f.vm.specs.lock().unwrap().push(spec("dev"));
+        let (got, done) = slot();
+        f.app.profile_spec(name("dev"), done);
+        assert!(f.vm.calls().is_empty(), "nothing runs on the caller");
+        f.spawner.run_all();
+        assert_eq!(got.lock().unwrap().take(), Some(Ok(spec("dev"))));
+        assert_eq!(f.vm.calls(), ["spec dev"]);
+    }
+
+    #[test]
+    fn profile_spec_of_an_unknown_profile_is_an_error() {
+        let f = mac();
+        let (got, done) = slot();
+        f.app.profile_spec(name("ghost"), done);
+        f.spawner.run_all();
+        assert!(matches!(got.lock().unwrap().take(), Some(Err(_))));
+    }
+
+    #[test]
+    fn host_os_is_the_one_given_to_new() {
+        assert_eq!(mac().app.host_os(), HostOs::MacOs);
+        let linux = fixture(FakeVm::default(), FakeEngine::default(), HostOs::Linux);
+        assert_eq!(linux.app.host_os(), HostOs::Linux);
+    }
+
+    #[test]
     fn cancelled_task_never_runs_and_never_calls_back() {
         let f = mac();
         let (got, done) = slot();
