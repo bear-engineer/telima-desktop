@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use telima_app::AppCommand;
 use telima_app::profiles::Lifecycle;
-use telima_app::view::tray::BusyOp;
+use telima_app::view::tray::{BusyOp, TrayError};
 use telima_core::profile::ProfileName;
 
 /// 트레이 명령 하나가 일으키는 동작 한 단계.
@@ -131,6 +131,26 @@ impl Tracked {
                 .get(name)
                 .map_or(BusyOp::Other, |lc| BusyOp::Lifecycle(*lc)),
         )
+    }
+}
+
+/// 창에서 끝난 시작·중지·재시작 가운데 마지막 실패. 트레이 오류 행과 오류 아이콘의 근거다.
+#[derive(Debug, Default)]
+pub struct LastFailure(Option<(ProfileName, Lifecycle)>);
+
+impl LastFailure {
+    /// 끝난 명령 하나를 반영한다. 실패면 기억하고, 같은 프로필의 성공이면 지운다.
+    pub fn record(&mut self, _name: ProfileName, _cmd: Lifecycle, _ok: bool) {}
+
+    /// 트레이에서 고른 명령을 본다. 창 열기(오류 행 포함)면 지운다.
+    pub fn on_command(&mut self, _cmd: &AppCommand) {}
+
+    /// 사용자가 창을 열면(Dock 클릭) 지운다.
+    pub fn clear(&mut self) {}
+
+    /// 트레이에 보일 오류. 명령 실패가 목록 읽기 실패보다 앞선다.
+    pub fn error(&self, list_failed: bool) -> Option<TrayError> {
+        list_failed.then_some(TrayError::List)
     }
 }
 
@@ -350,6 +370,69 @@ mod tests {
         assert!(!n.take(true, 1), "a window is still open");
         assert!(n.take(true, 0));
         assert!(!n.take(true, 0), "only once");
+    }
+
+    fn failed(n: &str, cmd: Lifecycle) -> Option<TrayError> {
+        Some(TrayError::Lifecycle { name: name(n), cmd })
+    }
+
+    #[test]
+    fn a_failed_command_puts_the_error_row_in_the_tray_model() {
+        let mut f = LastFailure::default();
+        assert_eq!(f.error(false), None);
+        f.record(name("dev"), Lifecycle::Start, false);
+        assert_eq!(f.error(false), failed("dev", Lifecycle::Start));
+        let model = telima_app::view::tray::tray_model(&[], |_| None, f.error(false).as_ref());
+        assert_eq!(
+            model.error.map(|e| (e.label, e.command)),
+            Some((
+                "오류: dev 시작 실패 — 창에서 보기".to_owned(),
+                AppCommand::OpenWindow
+            ))
+        );
+    }
+
+    #[test]
+    fn the_next_success_on_that_profile_clears_the_error() {
+        let mut f = LastFailure::default();
+        f.record(name("dev"), Lifecycle::Stop, false);
+        f.record(name("work"), Lifecycle::Start, true);
+        assert_eq!(
+            f.error(false),
+            failed("dev", Lifecycle::Stop),
+            "a success elsewhere keeps it"
+        );
+        f.record(name("dev"), Lifecycle::Restart, true);
+        assert_eq!(f.error(false), None);
+    }
+
+    #[test]
+    fn a_later_failure_replaces_the_earlier_one() {
+        let mut f = LastFailure::default();
+        f.record(name("dev"), Lifecycle::Start, false);
+        f.record(name("work"), Lifecycle::Restart, false);
+        assert_eq!(f.error(false), failed("work", Lifecycle::Restart));
+    }
+
+    #[test]
+    fn opening_the_window_clears_the_error() {
+        let mut f = LastFailure::default();
+        f.record(name("dev"), Lifecycle::Start, false);
+        f.on_command(&AppCommand::Refresh);
+        assert_eq!(f.error(false), failed("dev", Lifecycle::Start));
+        f.on_command(&AppCommand::OpenWindow);
+        assert_eq!(f.error(false), None, "창 열기 and the error row");
+        f.record(name("dev"), Lifecycle::Start, false);
+        f.clear();
+        assert_eq!(f.error(false), None, "Dock reopen");
+    }
+
+    #[test]
+    fn a_command_failure_wins_over_a_list_failure() {
+        let mut f = LastFailure::default();
+        assert_eq!(f.error(true), Some(TrayError::List));
+        f.record(name("dev"), Lifecycle::Stop, false);
+        assert_eq!(f.error(true), failed("dev", Lifecycle::Stop));
     }
 
     #[test]

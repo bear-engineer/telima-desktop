@@ -1379,7 +1379,7 @@ impl Render for MainView {
 }
 
 mod toolbar;
-pub use toolbar::{MenuRow, lifecycle_icon};
+pub use toolbar::{LifecycleEnd, MenuRow, lifecycle_icon};
 
 #[cfg(test)]
 mod tests;

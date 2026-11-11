@@ -855,8 +855,9 @@ fn footer_keeps_the_last_known_docker_version_for_a_stopped_profile(cx: &mut Tes
 // --- telima-l6p item 1: a failed create keeps its sidebar row ---
 
 /// [`FakeVm`] whose `create` writes its log and then fails without adding the profile,
-/// like `colima start` for a new profile that never reaches `colima ls`.
-struct CreateFails(Arc<FakeVm>);
+/// like `colima start` for a new profile that never reaches `colima ls`. With the flag set,
+/// `start` fails the same way.
+struct CreateFails(Arc<FakeVm>, bool);
 
 impl telima_core::ports::VmManager for CreateFails {
     async fn list(&self) -> telima_core::ports::PortResult<Vec<Profile>> {
@@ -880,7 +881,13 @@ impl telima_core::ports::VmManager for CreateFails {
         name: &ProfileName,
         progress: telima_core::ports::ProgressSink<'_>,
     ) -> telima_core::ports::PortResult<()> {
-        self.0.start(name, progress).await
+        self.0.start(name, progress).await?;
+        if self.1 {
+            return Err(telima_core::ports::PortError::Failed(
+                "error starting vm".into(),
+            ));
+        }
+        Ok(())
     }
     async fn stop(
         &self,
@@ -922,9 +929,14 @@ impl telima_core::ports::VmManager for CreateFails {
 
 /// Shell whose profile create fails (see [`CreateFails`]).
 fn fixture_create_fails(cx: &mut TestAppContext) -> Fixture {
+    fixture_failing(cx, false)
+}
+
+/// Shell whose profile create fails, and `start` too when `start_fails`.
+fn fixture_failing(cx: &mut TestAppContext, start_fails: bool) -> Fixture {
     let (vm, spawner, asked, _) = parts(|_| {});
     let app = App::new(
-        Arc::new(CreateFails(vm.clone())),
+        Arc::new(CreateFails(vm.clone(), start_fails)),
         HostOs::MacOs,
         |_: &ProfileName| {
             let engine: Arc<dyn DynEngine> = Arc::new(FakeEngine::default());

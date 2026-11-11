@@ -30,6 +30,14 @@ pub struct MenuRow {
     pub current: bool,
 }
 
+/// A start, stop or restart sent from this window that ended; the tray shows the last failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleEnd {
+    pub name: ProfileName,
+    pub cmd: Lifecycle,
+    pub ok: bool,
+}
+
 /// Icon drawn on a toolbar button. Commands without a toolbar button (open window, quit)
 /// never reach it; they share the new-profile glyph.
 pub fn lifecycle_icon(cmd: &AppCommand) -> Icon {
@@ -67,6 +75,18 @@ impl MainView {
             .filter(|_| self.pending.contains(name) && !self.placeholders.contains_key(name))
             .map(|(p, _)| BusyOp::Lifecycle(p.read(cx).cmd()));
         Some(lifecycle.unwrap_or(BusyOp::Other))
+    }
+
+    /// Start, stop and restart results since the last call, oldest first. Cancels and
+    /// creates are left out.
+    pub fn take_lifecycle_ends(&mut self) -> Vec<LifecycleEnd> {
+        Vec::new()
+    }
+
+    /// Keyboard-highlighted row of the open dropdown: a profile index, or one past the last
+    /// profile for 새 프로필….
+    pub fn profile_menu_highlight(&self) -> Option<usize> {
+        None
     }
 
     /// Selects `name` once the profile list arrives (a reopened window keeps the last

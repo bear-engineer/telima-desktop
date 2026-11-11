@@ -17,6 +17,8 @@ pub const REFRESH: &str = "새로고침";
 pub const TRAY_QUIT: &str = "telima 종료";
 /// Toolbar button that opens the new-profile form.
 pub const NEW_PROFILE: &str = "새 프로필";
+/// Tooltip prefix of the toolbar profile dropdown (canvas 07 `프로필 선택: default, 실행 중`).
+pub const PROFILE_PICKER: &str = "프로필 선택";
 /// Last item of the toolbar profile dropdown.
 pub const NEW_PROFILE_MENU: &str = "새 프로필…";
 
@@ -106,6 +108,11 @@ fn fixed_item(label: &str, command: AppCommand) -> CommandItem {
         command,
         enabled: true,
     }
+}
+
+/// Tooltip of the toolbar profile dropdown: `프로필 선택: default, 실행 중`.
+pub fn profile_picker_label(_name: &str, _kind: StatusKind) -> String {
+    String::new()
 }
 
 fn error_label(error: &TrayError) -> String {
@@ -561,5 +568,17 @@ mod tests {
             "트레이를 표시할 수 없는 환경에서는 창을 닫으면 앱이 종료됩니다."
         );
         assert_eq!(NEW_PROFILE_MENU, "새 프로필…");
+    }
+
+    #[test]
+    fn profile_picker_label_names_the_profile_and_its_status() {
+        assert_eq!(
+            profile_picker_label("default", StatusKind::Running),
+            "프로필 선택: default, 실행 중"
+        );
+        assert_eq!(
+            profile_picker_label("dev", StatusKind::Stopped),
+            "프로필 선택: dev, 중지"
+        );
     }
 }

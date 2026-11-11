@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use telima_app::AppCommand;
 use telima_app::view::tray::TrayModel;
+use tray_icon::menu::accelerator::Accelerator;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -43,6 +44,11 @@ impl Container for Submenu {
     }
 }
 
+/// Shortcut hint drawn next to a menu item: ⌘Q on `telima 종료` (canvas 10).
+fn accelerator(_command: &AppCommand) -> Option<Accelerator> {
+    None
+}
+
 fn append_all(
     parent: &impl Container,
     nodes: &[MenuNode],
@@ -60,7 +66,7 @@ fn append_all(
                     Some(command) => {
                         let id = MenuId::new(commands.len().to_string());
                         commands.push(command.clone());
-                        MenuItem::with_id(id, label, *enabled, None)
+                        MenuItem::with_id(id, label, *enabled, accelerator(command))
                     }
                     None => MenuItem::new(label, *enabled, None),
                 };
@@ -113,5 +119,33 @@ impl Inner {
             let _ = self.tray.set_icon_templated(Some(icon));
         }
         let _ = self.tray.set_tooltip(Some(icon_state(model).tooltip()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use telima_app::AppCommand;
+    use telima_core::profile::ProfileName;
+    use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
+
+    use super::accelerator;
+
+    #[test]
+    fn only_quit_carries_the_cmd_q_hint() {
+        assert_eq!(
+            accelerator(&AppCommand::Quit),
+            Some(Accelerator::new(Modifiers::META, Code::KeyQ))
+        );
+        let dev = ProfileName::parse("dev").unwrap();
+        for cmd in [
+            AppCommand::OpenWindow,
+            AppCommand::Refresh,
+            AppCommand::NewProfile,
+            AppCommand::Start(dev.clone()),
+            AppCommand::Stop(dev.clone()),
+            AppCommand::Restart(dev),
+        ] {
+            assert_eq!(accelerator(&cmd), None, "{cmd:?}");
+        }
     }
 }

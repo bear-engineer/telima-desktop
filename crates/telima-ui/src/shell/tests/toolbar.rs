@@ -10,7 +10,7 @@ use telima_core::profile::ProfileName;
 
 use super::{Fixture, MainView, click, fixture, parts, real_window};
 use crate::components::icons::{Icon, strokes};
-use crate::shell::{MenuRow, Screen, lifecycle_icon};
+use crate::shell::{LifecycleEnd, MenuRow, Screen, lifecycle_icon};
 use crate::theme::metric;
 
 fn name(raw: &str) -> ProfileName {
@@ -296,4 +296,106 @@ fn t3_a_reopened_window_keeps_the_preferred_profile(cx: &mut gpui_kit::TestAppCo
         f.view.read_with(cx, |v, _| v.selected().cloned()),
         Some(name("work"))
     );
+}
+
+fn ends(f: &Fixture, cx: &mut gpui_kit::TestAppContext) -> Vec<LifecycleEnd> {
+    f.view.update(cx, |v, _| v.take_lifecycle_ends())
+}
+
+#[gpui_kit::test]
+fn m1_a_failed_start_is_reported_once_for_the_tray(cx: &mut gpui_kit::TestAppContext) {
+    let f = super::fixture_failing(cx, true);
+    f.view.update(cx, |v, cx| {
+        v.run_command(&AppCommand::Start(name("work")), cx)
+    });
+    f.settle(cx);
+    f.settle(cx);
+    assert_eq!(
+        ends(&f, cx),
+        [LifecycleEnd {
+            name: name("work"),
+            cmd: Lifecycle::Start,
+            ok: false
+        }]
+    );
+    assert!(ends(&f, cx).is_empty(), "taken once");
+}
+
+#[gpui_kit::test]
+fn m1_a_finished_stop_is_reported_ok(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    f.view.update(cx, |v, cx| {
+        v.run_command(&AppCommand::Stop(name("default")), cx)
+    });
+    f.settle(cx);
+    f.settle(cx);
+    assert_eq!(
+        ends(&f, cx),
+        [LifecycleEnd {
+            name: name("default"),
+            cmd: Lifecycle::Stop,
+            ok: true
+        }]
+    );
+}
+
+#[gpui_kit::test]
+fn m1_a_failed_create_is_not_a_lifecycle_end(cx: &mut gpui_kit::TestAppContext) {
+    let f = super::fixture_create_fails(cx);
+    f.view.update(cx, |v, cx| v.new_profile(cx));
+    let editor = f.view.read_with(cx, |v, _| v.editor().cloned()).unwrap();
+    editor.update(cx, |e, cx| {
+        e.set_name("telima-test-fail", cx);
+        e.submit(cx);
+    });
+    f.settle(cx);
+    f.settle(cx);
+    assert!(ends(&f, cx).is_empty());
+}
+
+fn menu_open(view: &gpui_kit::Entity<MainView>, cx: &mut gpui_kit::VisualTestContext) -> bool {
+    view.read_with(cx, |v, _| v.profile_menu().is_some())
+}
+
+#[gpui_kit::test]
+fn l5_escape_closes_the_profile_dropdown(cx: &mut gpui_kit::TestAppContext) {
+    let (view, _, _, cx) = super::real_main(cx);
+    click(cx, "toolbar-profile");
+    assert!(menu_open(&view, cx));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!menu_open(&view, cx), "Escape left the dropdown open");
+}
+
+#[gpui_kit::test]
+fn l5_arrow_keys_move_and_enter_picks_a_profile(cx: &mut gpui_kit::TestAppContext) {
+    let (view, _, _, cx) = super::real_main(cx);
+    let highlight = |cx: &mut gpui_kit::VisualTestContext| {
+        view.read_with(cx, |v, _| v.profile_menu_highlight())
+    };
+    click(cx, "toolbar-profile");
+    // Rows: alpha, default (current), work, then 새 프로필….
+    assert_eq!(highlight(cx), Some(1), "starts on the current profile");
+    cx.simulate_keystrokes("down");
+    assert_eq!(highlight(cx), Some(2));
+    cx.simulate_keystrokes("down down");
+    assert_eq!(highlight(cx), Some(3), "stops at 새 프로필…");
+    cx.simulate_keystrokes("up up up up");
+    assert_eq!(highlight(cx), Some(0), "stops at the first row");
+    cx.simulate_keystrokes("down down enter");
+    cx.run_until_parked();
+    assert!(!menu_open(&view, cx));
+    assert_eq!(
+        view.read_with(cx, |v, _| v.selected().cloned()),
+        Some(name("work"))
+    );
+}
+
+#[gpui_kit::test]
+fn l5_enter_on_the_last_row_opens_the_create_form(cx: &mut gpui_kit::TestAppContext) {
+    let (view, _, _, cx) = super::real_main(cx);
+    click(cx, "toolbar-profile");
+    cx.simulate_keystrokes("down down enter");
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |v, _| v.screen()), Screen::Create);
 }
