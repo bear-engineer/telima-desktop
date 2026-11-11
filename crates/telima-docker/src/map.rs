@@ -1,6 +1,132 @@
 //! Pure mappings from bollard Docker Engine API models to telima-core entities.
 //! No I/O here: every function takes an already-decoded engine model.
 
+use bollard::container::LogOutput;
+use bollard::models::{
+    ContainerSummary, ContainerSummaryStateEnum, ImagePruneResponse, ImageSummary,
+    SystemDataUsageResponse, Volume, VolumePruneResponse,
+};
+use telima_core::container::{
+    Container, ContainerState, DiskUsage, Image, LogLine, LogStream, PruneReport,
+    Volume as DomainVolume,
+};
+
+/// Engine sizes and counts are signed; negatives mean "unknown" and map to zero or `None`.
+fn non_negative(v: i64) -> u64 {
+    u64::try_from(v).unwrap_or(0)
+}
+
+fn known_count(v: i64) -> Option<u64> {
+    u64::try_from(v).ok()
+}
+
+/// Container summary to the domain container. Engine names carry a leading `/`.
+pub fn map_container(summary: &ContainerSummary) -> Container {
+    let name = summary
+        .names
+        .as_ref()
+        .and_then(|names| names.first())
+        .map(|n| n.strip_prefix('/').unwrap_or(n).to_owned())
+        .unwrap_or_default();
+    let state = summary
+        .state
+        .map(|s: ContainerSummaryStateEnum| ContainerState::parse(s.as_ref()))
+        .unwrap_or(ContainerState::Other);
+    Container {
+        id: summary.id.clone().unwrap_or_default(),
+        name,
+        image: summary.image.clone().unwrap_or_default(),
+        state,
+        status_text: summary.status.clone().unwrap_or_default(),
+    }
+}
+
+/// Image summary to the domain image. A negative container count means unknown.
+pub fn map_image(summary: &ImageSummary) -> Image {
+    Image {
+        id: summary.id.clone(),
+        tags: summary.repo_tags.clone(),
+        size_bytes: non_negative(summary.size),
+        containers: known_count(summary.containers),
+    }
+}
+
+/// Volume to the domain volume. Usage data is optional; negative values mean unknown.
+pub fn map_volume(volume: &Volume) -> DomainVolume {
+    let usage = volume.usage_data.as_ref();
+    DomainVolume {
+        name: volume.name.clone(),
+        size_bytes: usage.and_then(|u| known_count(u.size)),
+        ref_count: usage.and_then(|u| known_count(u.ref_count)),
+    }
+}
+
+/// System df response to disk usage per section; missing sections count as zero.
+pub fn map_disk_usage(df: &SystemDataUsageResponse) -> DiskUsage {
+    DiskUsage {
+        images_bytes: df
+            .image_usage
+            .as_ref()
+            .and_then(|u| u.total_size)
+            .map_or(0, non_negative),
+        containers_bytes: df
+            .container_usage
+            .as_ref()
+            .and_then(|u| u.total_size)
+            .map_or(0, non_negative),
+        volumes_bytes: df
+            .volume_usage
+            .as_ref()
+            .and_then(|u| u.total_size)
+            .map_or(0, non_negative),
+        build_cache_bytes: df
+            .build_cache_usage
+            .as_ref()
+            .and_then(|u| u.total_size)
+            .map_or(0, non_negative),
+    }
+}
+
+/// Image prune response to a report. Each removal prefers the deleted id, then the untagged ref.
+pub fn map_image_prune(resp: &ImagePruneResponse) -> PruneReport {
+    let removed = resp
+        .images_deleted
+        .iter()
+        .flatten()
+        .filter_map(|item| item.deleted.clone().or_else(|| item.untagged.clone()))
+        .collect();
+    PruneReport {
+        removed,
+        reclaimed_bytes: resp.space_reclaimed.map_or(0, non_negative),
+    }
+}
+
+/// Volume prune response to a report.
+pub fn map_volume_prune(resp: &VolumePruneResponse) -> PruneReport {
+    PruneReport {
+        removed: resp.volumes_deleted.clone().unwrap_or_default(),
+        reclaimed_bytes: resp.space_reclaimed.map_or(0, non_negative),
+    }
+}
+
+/// One log chunk to a log line. Trailing newline is trimmed; invalid UTF-8 is replaced.
+/// Stdin echoes are not log output and yield `None`.
+pub fn map_log_output(output: &LogOutput) -> Option<LogLine> {
+    let (stream, bytes) = match output {
+        LogOutput::StdOut { message } | LogOutput::Console { message } => {
+            (LogStream::Stdout, message)
+        }
+        LogOutput::StdErr { message } => (LogStream::Stderr, message),
+        LogOutput::StdIn { .. } => return None,
+    };
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.strip_suffix('\n').unwrap_or(&text);
+    Some(LogLine {
+        stream,
+        text: trimmed.to_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,7 +220,10 @@ mod tests {
     fn volume_usage_data_maps_size_and_ref_count() {
         let v = Volume {
             name: "pgdata".into(),
-            usage_data: Some(VolumeUsageData { size: 4096, ref_count: 0 }),
+            usage_data: Some(VolumeUsageData {
+                size: 4096,
+                ref_count: 0,
+            }),
             ..Default::default()
         };
         let vol = map_volume(&v);
@@ -107,7 +236,10 @@ mod tests {
     fn volume_usage_sentinel_minus_one_is_unknown() {
         let v = Volume {
             name: "x".into(),
-            usage_data: Some(VolumeUsageData { size: -1, ref_count: -1 }),
+            usage_data: Some(VolumeUsageData {
+                size: -1,
+                ref_count: -1,
+            }),
             ..Default::default()
         };
         let vol = map_volume(&v);
@@ -118,11 +250,22 @@ mod tests {
     #[test]
     fn disk_usage_maps_each_section_total_size() {
         let df = SystemDataUsageResponse {
-            image_usage: Some(ImagesDiskUsage { total_size: Some(100), ..Default::default() }),
-            container_usage: Some(ContainersDiskUsage { total_size: Some(20), ..Default::default() }),
-            volume_usage: Some(VolumesDiskUsage { total_size: Some(300), ..Default::default() }),
-            build_cache_usage: Some(BuildCacheDiskUsage { total_size: Some(4), ..Default::default() }),
-            ..Default::default()
+            image_usage: Some(ImagesDiskUsage {
+                total_size: Some(100),
+                ..Default::default()
+            }),
+            container_usage: Some(ContainersDiskUsage {
+                total_size: Some(20),
+                ..Default::default()
+            }),
+            volume_usage: Some(VolumesDiskUsage {
+                total_size: Some(300),
+                ..Default::default()
+            }),
+            build_cache_usage: Some(BuildCacheDiskUsage {
+                total_size: Some(4),
+                ..Default::default()
+            }),
         };
         let usage = map_disk_usage(&df);
         assert_eq!(usage.images_bytes, 100);
@@ -191,36 +334,55 @@ mod tests {
 
     #[test]
     fn stdout_and_stderr_chunks_map_to_log_lines() {
-        let out = LogOutput::StdOut { message: "hello\n".into() };
-        let err = LogOutput::StdErr { message: "boom".into() };
+        let out = LogOutput::StdOut {
+            message: "hello\n".into(),
+        };
+        let err = LogOutput::StdErr {
+            message: "boom".into(),
+        };
         assert_eq!(
             map_log_output(&out),
-            Some(LogLine { stream: LogStream::Stdout, text: "hello".into() })
+            Some(LogLine {
+                stream: LogStream::Stdout,
+                text: "hello".into()
+            })
         );
         assert_eq!(
             map_log_output(&err),
-            Some(LogLine { stream: LogStream::Stderr, text: "boom".into() })
+            Some(LogLine {
+                stream: LogStream::Stderr,
+                text: "boom".into()
+            })
         );
     }
 
     #[test]
     fn console_output_maps_to_stdout() {
-        let c = LogOutput::Console { message: "tty\n".into() };
+        let c = LogOutput::Console {
+            message: "tty\n".into(),
+        };
         assert_eq!(
             map_log_output(&c),
-            Some(LogLine { stream: LogStream::Stdout, text: "tty".into() })
+            Some(LogLine {
+                stream: LogStream::Stdout,
+                text: "tty".into()
+            })
         );
     }
 
     #[test]
     fn stdin_echo_is_not_a_log_line() {
-        let i = LogOutput::StdIn { message: "typed\n".into() };
+        let i = LogOutput::StdIn {
+            message: "typed\n".into(),
+        };
         assert_eq!(map_log_output(&i), None);
     }
 
     #[test]
     fn invalid_utf8_is_replaced_not_dropped() {
-        let out = LogOutput::StdOut { message: vec![0x66, 0x6f, 0xff].into() };
+        let out = LogOutput::StdOut {
+            message: vec![0x66, 0x6f, 0xff].into(),
+        };
         let line = map_log_output(&out).expect("stdout line");
         assert_eq!(line.text, "fo\u{fffd}");
     }
