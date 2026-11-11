@@ -275,7 +275,9 @@ impl EnginePanel {
             }
         }
         match msg {
-            Msg::Containers(r) => self.containers = list(r, container_rows),
+            Msg::Containers(r) => {
+                self.containers = list(r, |c: &[Container]| container_rows(c, now()))
+            }
             Msg::Images(r) => self.images = list(r, image_rows),
             Msg::Volumes(r) => self.volumes = list(r, volume_rows),
             Msg::ImagePreview(Ok(list)) => {
@@ -586,3 +588,12 @@ impl EnginePanel {
 
 #[cfg(test)]
 mod tests;
+
+/// Wall-clock time for relative labels ("3시간 전"). Views read the clock; core and app do not.
+fn now() -> telima_core::time::UnixMillis {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    telima_core::time::UnixMillis(ms)
+}

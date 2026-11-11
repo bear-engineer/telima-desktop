@@ -45,6 +45,9 @@ fn container(id: &str, name: &str, state: ContainerState) -> Container {
         image: "postgres:17".into(),
         state,
         status_text: "Up 3 hours".into(),
+        ports: Vec::new(),
+        created_at: None,
+        started_at: None,
     }
 }
 

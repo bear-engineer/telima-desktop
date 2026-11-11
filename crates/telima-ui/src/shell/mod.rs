@@ -225,7 +225,12 @@ impl MainView {
                 Msg::Config(_, Err(_)) => {}
                 Msg::DeleteFacts(name, containers, volume_sizes) => {
                     if self.selected.as_ref() == Some(&name) && self.delete_confirm.is_none() {
-                        let copy = confirm_delete_profile(&name, containers, &volume_sizes);
+                        let copy = confirm_delete_profile(
+                            &name,
+                            containers,
+                            &volume_sizes,
+                            telima_core::profile::DeleteOptions::default(),
+                        );
                         let app = self.app.clone();
                         let confirm = cx.new(|cx| DeleteConfirm::new(app, name, copy, cx));
                         let sub = cx.subscribe(&confirm, |v, _, ev: &DeleteEvent, cx| {

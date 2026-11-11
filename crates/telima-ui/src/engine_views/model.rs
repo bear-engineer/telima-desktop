@@ -229,37 +229,43 @@ mod tests {
             image: image.into(),
             state,
             status_text: raw.into(),
+            ports: Vec::new(),
+            created_at: None,
+            started_at: None,
         };
-        container_rows(&[
-            c(
-                "a1",
-                "pg-main",
-                "postgres:17",
-                ContainerState::Running,
-                "Up 3 hours",
-            ),
-            c(
-                "b2",
-                "cache",
-                "redis:7",
-                ContainerState::Running,
-                "Up 3 hours",
-            ),
-            c(
-                "c3",
-                "migrate",
-                "alpine:3.20",
-                ContainerState::Exited,
-                "Exited (0) 1 hour ago",
-            ),
-            c(
-                "d4",
-                "worker",
-                "alpine:3.20",
-                ContainerState::Exited,
-                "Exited (1) 1 hour ago",
-            ),
-        ])
+        container_rows(
+            &[
+                c(
+                    "a1",
+                    "pg-main",
+                    "postgres:17",
+                    ContainerState::Running,
+                    "Up 3 hours",
+                ),
+                c(
+                    "b2",
+                    "cache",
+                    "redis:7",
+                    ContainerState::Running,
+                    "Up 3 hours",
+                ),
+                c(
+                    "c3",
+                    "migrate",
+                    "alpine:3.20",
+                    ContainerState::Exited,
+                    "Exited (0) 1 hour ago",
+                ),
+                c(
+                    "d4",
+                    "worker",
+                    "alpine:3.20",
+                    ContainerState::Exited,
+                    "Exited (1) 1 hour ago",
+                ),
+            ],
+            telima_core::time::UnixMillis(0),
+        )
     }
 
     fn names(v: Vec<&ContainerRow>) -> Vec<&str> {

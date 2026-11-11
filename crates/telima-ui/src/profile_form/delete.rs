@@ -95,10 +95,12 @@ impl DeleteConfirm {
         self.deleting = true;
         self.error = None;
         let inbox = self.inbox.clone();
-        self.app
-            .delete_profile(self.name.clone(), self.typed.clone(), move |r| {
-                inbox.lock().unwrap().push(r)
-            });
+        self.app.delete_profile(
+            self.name.clone(),
+            self.typed.clone(),
+            telima_core::profile::DeleteOptions::default(),
+            move |r| inbox.lock().unwrap().push(r),
+        );
         cx.notify();
     }
 

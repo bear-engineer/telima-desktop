@@ -61,6 +61,8 @@ fn spec(name: &str) -> ProfileSpec {
         runtime: Runtime::Docker,
         rosetta: false,
         network_address: false,
+        mounts: Vec::new(),
+        kubernetes: false,
     }
 }
 
@@ -71,6 +73,9 @@ fn container(id: &str, name: &str) -> Container {
         image: "alpine:3".into(),
         state: ContainerState::Running,
         status_text: String::new(),
+        ports: Vec::new(),
+        created_at: None,
+        started_at: None,
     }
 }
 

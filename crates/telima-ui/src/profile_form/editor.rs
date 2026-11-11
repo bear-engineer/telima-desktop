@@ -8,7 +8,7 @@ use gpui_kit::*;
 use telima_app::AppError;
 use telima_app::runtime::App as Telima;
 use telima_app::view::notice::error_text;
-use telima_core::profile::{HostOs, MountType, ProfileName, ProfileSpec, Runtime, VmType};
+use telima_core::profile::{HostOs, Mount, MountType, ProfileName, ProfileSpec, Runtime, VmType};
 use telima_core::rules::{self, RuleViolation};
 
 use super::widgets::{Tone, button, edit_text, error_line, field_row, text_box};
@@ -79,6 +79,11 @@ impl Field {
                 Field::from_key(field).unwrap_or(Field::Name)
             }
             RuleViolation::DiskShrink { .. } => Field::Disk,
+            // Mount and Kubernetes fields get their own editor rows in L6; until then
+            // their violations are shown on the form-wide error line.
+            RuleViolation::MountPathNotAbsolute(_)
+            | RuleViolation::DuplicateMount(_)
+            | RuleViolation::KubernetesNeedsDocker(_) => Field::Name,
         }
     }
 }
@@ -101,6 +106,7 @@ pub fn violation_text(v: &RuleViolation) -> String {
         RuleViolation::DiskShrink { from, to } => {
             format!("디스크는 늘리기만 할 수 있습니다 ({from} GiB → {to} GiB)")
         }
+        other => telima_app::view::daily::mount_violation_text(other).unwrap_or_default(),
     }
 }
 
@@ -132,6 +138,8 @@ pub struct Draft {
     pub runtime: Runtime,
     pub rosetta: bool,
     pub network_address: bool,
+    pub mounts: Vec<Mount>,
+    pub kubernetes: bool,
 }
 
 impl Draft {
@@ -147,6 +155,8 @@ impl Draft {
             runtime: rules::SUPPORTED_RUNTIMES[0],
             rosetta: false,
             network_address: false,
+            mounts: Vec::new(),
+            kubernetes: false,
         }
     }
 
@@ -161,6 +171,8 @@ impl Draft {
             runtime: s.runtime,
             rosetta: s.rosetta,
             network_address: s.network_address,
+            mounts: s.mounts.clone(),
+            kubernetes: s.kubernetes,
         }
     }
 
@@ -175,6 +187,8 @@ impl Draft {
             runtime: self.runtime,
             rosetta: self.rosetta,
             network_address: self.network_address,
+            mounts: self.mounts.clone(),
+            kubernetes: self.kubernetes,
         }
     }
 }
