@@ -2,7 +2,7 @@
 use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
-use gpui_kit::{AppContext, Entity, TestAppContext};
+use gpui_kit::{AppContext, Entity, Modifiers, TestAppContext};
 use telima_app::profiles::Lifecycle;
 use telima_app::runtime::{App, BoxFuture, DynEngine, Spawner};
 use telima_app::testing::{FakeEngine, FakeVm};
@@ -198,4 +198,43 @@ fn cancel_marks_the_log_cancelled(cx: &mut TestAppContext) {
     assert!(!log.read_with(cx, |l, _| l.is_running()));
     assert!(log.read_with(cx, |l, _| l.is_cancelled()));
     assert!(log.read_with(cx, |l, _| l.lines().is_empty()));
+}
+
+#[gpui_kit::test]
+fn start_progress_maps_log_lines_to_the_six_steps(cx: &mut TestAppContext) {
+    let (_, spawner, app) = setup(&["checking existing profile config", "booting vm"]);
+    let name = ProfileName::parse("telima-test-a").unwrap();
+    let log = cx.new(|cx| StartProgress::new(app, name, Lifecycle::Start, cx));
+    assert_eq!(log.read_with(cx, |l, _| l.step_progress().current), 0);
+    spawner.run_all();
+    log.update(cx, |l, cx| l.pump(cx));
+    let steps = log.read_with(cx, |l, _| l.step_progress());
+    assert_eq!(steps.current, 3);
+    assert_eq!(steps.text(), "3/6");
+    assert_eq!(steps.label, "VM 부팅");
+}
+
+#[gpui_kit::test]
+fn switch_and_segment_clicks_change_the_draft(cx: &mut TestAppContext) {
+    let (_, _, app) = setup(&[]);
+    let (form, cx) = cx.add_window_view(|_, cx| ProfileEditor::create(app, HostOs::MacOs, cx));
+    cx.run_until_parked();
+    assert!(!form.read_with(cx, |f, _| f.draft().network_address));
+    let b = cx
+        .debug_bounds("switch-network-address")
+        .expect("network address switch rendered");
+    cx.simulate_click(b.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(form.read_with(cx, |f, _| f.draft().network_address));
+
+    let b = cx.debug_bounds("switch-network-address").unwrap();
+    cx.simulate_click(b.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(!form.read_with(cx, |f, _| f.draft().network_address));
+
+    let before = form.read_with(cx, |f, _| f.draft().mount_type);
+    let b = cx.debug_bounds("segment-mount-1").expect("mount segments rendered");
+    cx.simulate_click(b.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert_ne!(form.read_with(cx, |f, _| f.draft().mount_type), before);
 }
