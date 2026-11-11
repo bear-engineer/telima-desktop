@@ -55,7 +55,7 @@ fn map_port(port: &PortSummary) -> PortBinding {
         container_port: port.private_port,
         protocol: port
             .typ
-            .and_then(|t| PortProtocol::parse(&t.to_string()))
+            .and_then(|t| PortProtocol::parse(t.as_ref()))
             .unwrap_or(PortProtocol::Tcp),
     }
 }
