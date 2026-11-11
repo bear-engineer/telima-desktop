@@ -342,4 +342,13 @@ fn inline_form_is_capped_and_buttons_sit_at_its_right_edge(cx: &mut TestAppConte
         frame.right() - submit.right() < px(metric::BTN_PAD_X * 4.0),
         "buttons not right-aligned to the form: frame {frame:?}, submit {submit:?}"
     );
+    // L7: fields and footer share one width, so the submit button's right edge is the
+    // widest field's (name input) right edge.
+    let name = cx.debug_bounds("profile-name").expect("name field rendered");
+    assert!(
+        (submit.right() - name.right()).abs() < px(1.0),
+        "submit right {:?} != name field right {:?}",
+        submit.right(),
+        name.right()
+    );
 }

@@ -599,6 +599,7 @@ impl Render for ProfileEditor {
             p,
         )
         .w(px(metric::FIELD_SELECT))
+        .debug_selector(|| "profile-name".to_string())
         .when(!name_locked, |b| {
             b.on_click(cx.listener(|v, _, window, cx| window.focus(&v.name_focus, cx)))
                 .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
