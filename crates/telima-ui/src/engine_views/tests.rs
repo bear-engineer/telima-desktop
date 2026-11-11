@@ -454,19 +454,16 @@ fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
                 "column {col} at {w}"
             );
         }
-        // N7: the status column fits "실행 중 · 2시간" (3 = 상태 once 포트/시작 are hidden).
+        // N7: the status column (3 = 상태) fits "실행 중 · 2시간".
         let need = status_text_width(cx);
         let status = cx.debug_bounds("ctr-cell-c1-3").expect("status cell");
         assert!(
             status.size.width >= need,
             "status cell {status:?} narrower than {need:?} at {w}"
         );
-        // N7: no data → no 포트/시작 columns.
-        assert_eq!(
-            super::copy::CONTAINER_COLS.len(),
-            4,
-            "포트/시작 shown without data"
-        );
+        // M4: 포트/시작 columns are back now that rows carry the data.
+        let labels: Vec<_> = super::copy::CONTAINER_COLS.iter().map(|c| c.0).collect();
+        assert_eq!(labels, ["이름", "ID", "이미지", "상태", "포트", "시작"]);
     }
 }
 
@@ -573,4 +570,134 @@ fn row_menu_opens_under_its_button_right_aligned(cx: &mut TestAppContext) {
         menu.top() >= more.bottom() && menu.top() - more.bottom() <= space(0),
         "menu {menu:?} not directly under {more:?}"
     );
+}
+
+/// M3: start and stop run the use cases.
+#[gpui_kit::test]
+fn start_and_stop_call_the_use_cases(cx: &mut TestAppContext) {
+    let f = fixture(cx, Tab::Containers);
+    f.settle(cx);
+    f.view.update(cx, |v, cx| v.start("c2", cx));
+    f.view.update(cx, |v, cx| v.stop("c1", cx));
+    f.settle(cx);
+    let calls = f.engine.calls();
+    assert!(calls.contains(&"start c2".to_string()), "{calls:?}");
+    assert!(calls.contains(&"stop c1".to_string()), "{calls:?}");
+}
+
+/// M3: a running row offers 중지, an exited row offers 시작, never both.
+#[gpui_kit::test]
+fn row_icon_actions_are_valid_for_the_state(cx: &mut TestAppContext) {
+    let (view, cx) = long_image_panel(cx);
+    view.update(cx, |v, cx| v.select("c2", cx));
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("ctr-stop-c1").is_some(),
+        "running row lacks 중지"
+    );
+    assert!(
+        cx.debug_bounds("ctr-start-c1").is_none(),
+        "running row offers 시작"
+    );
+    assert!(
+        cx.debug_bounds("ctr-start-c2").is_some(),
+        "exited row lacks 시작"
+    );
+    assert!(
+        cx.debug_bounds("ctr-stop-c2").is_none(),
+        "exited row offers 중지"
+    );
+}
+
+/// M4: the 포트/시작 cells show the row data.
+#[gpui_kit::test]
+fn ports_and_started_come_from_the_row(cx: &mut TestAppContext) {
+    let f = fixture(cx, Tab::Containers);
+    f.engine.containers.lock().unwrap()[1].ports = vec![telima_core::container::PortBinding {
+        host_ip: None,
+        host_port: Some(8080),
+        container_port: 80,
+        protocol: telima_core::container::PortProtocol::Tcp,
+    }];
+    f.settle(cx);
+    let ports = f.view.read_with(cx, |v, _| {
+        v.visible_containers()
+            .into_iter()
+            .map(|r| r.ports)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(ports, ["8080→80/tcp", "—"]);
+}
+
+/// L6 leftover: Escape closes the row ⋯ menu.
+#[gpui_kit::test]
+fn escape_closes_the_row_menu(cx: &mut TestAppContext) {
+    let (view, cx) = long_image_panel(cx);
+    let more = cx.debug_bounds("ctr-more-c1").expect("⋯ button");
+    cx.simulate_click(more.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.menu().is_some()), "menu opened");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |v, _| v.menu().is_none()),
+        "Escape left the menu open"
+    );
+}
+
+/// M7: log rows carry the line's real timestamp in the viewer's offset and follow the
+/// 로그 검색 query (app log filter: case-insensitive, blank = all).
+#[test]
+fn log_rows_show_timestamps_and_filter_by_query() {
+    use telima_core::container::{LogLine, LogStream};
+    use telima_core::time::UnixMillis;
+    let line = |text: &str, ts: Option<i64>| LogLine {
+        stream: LogStream::Stdout,
+        text: text.into(),
+        timestamp: ts.map(UnixMillis),
+    };
+    // 2026-11-14T05:14:02Z
+    let lines = [
+        line("LOG: ready", Some(1_794_633_242_000)),
+        line("ERROR: boom", None),
+    ];
+    let rows = super::model::log_rows(&lines, "", 9 * 3600);
+    let got: Vec<_> = rows.iter().map(|r| (r.time.as_str(), r.text)).collect();
+    assert_eq!(got, [("14:14:02", "LOG: ready"), ("", "ERROR: boom")]);
+    let rows = super::model::log_rows(&lines, "error", 0);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text, "ERROR: boom");
+}
+
+/// M7: typing into 로그 검색 narrows the visible log lines.
+#[gpui_kit::test]
+fn log_search_field_filters_lines(cx: &mut TestAppContext) {
+    let (view, cx) = long_image_panel(cx);
+    open_logs_by_menu(cx);
+    spawner_settle(&view, cx);
+    let field = cx.debug_bounds("log-search").expect("로그 검색 field");
+    cx.simulate_click(field.center(), Modifiers::none());
+    cx.simulate_keystrokes("z z z");
+    cx.run_until_parked();
+    let (query, shown) = view.read_with(cx, |v, _| (v.log_query().to_owned(), v.log_rows().len()));
+    assert_eq!(query, "zzz");
+    assert_eq!(shown, 0);
+    view.update(cx, |v, cx| v.set_log_query(String::new(), cx));
+    assert!(view.read_with(cx, |v, _| v.log_query().is_empty()));
+}
+
+fn spawner_settle(view: &Entity<EnginePanel>, cx: &mut VisualTestContext) {
+    view.update(cx, |v, cx| v.pump(cx));
+    cx.run_until_parked();
+}
+
+/// M13: the log panel opens with the motion tokens, not literal timings.
+#[test]
+fn log_panel_uses_the_motion_tokens() {
+    use crate::theme::motion;
+    let a = super::render::log_open_animation();
+    assert_eq!(a.duration, motion::BASE);
+    for t in [0.25_f32, 0.5, 0.75] {
+        assert_eq!((a.easing)(t), motion::ease_out(t));
+    }
 }
