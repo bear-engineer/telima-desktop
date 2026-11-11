@@ -115,6 +115,8 @@ pub struct EnginePanel {
     menu: Option<String>,
     /// Keyboard focus of the toolbar filter field.
     focus: FocusHandle,
+    /// Keyboard focus of the log panel, so Escape closes it (N6).
+    log_focus: FocusHandle,
     log: Option<LogPanel>,
     log_job: Option<Job>,
     streams: u64,
@@ -147,6 +149,7 @@ impl EnginePanel {
             selected: None,
             menu: None,
             focus: cx.focus_handle(),
+            log_focus: cx.focus_handle(),
             log: None,
             log_job: None,
             streams: 0,

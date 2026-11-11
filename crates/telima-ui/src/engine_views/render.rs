@@ -198,40 +198,51 @@ impl EnginePanel {
         };
         let (logs, restart, remove) = (r.id.clone(), r.id.clone(), r.id.clone());
         deferred(
-            anchored().anchor(Anchor::TopRight).child(
-                v_flex()
-                    .id("row-menu")
-                    .occlude()
-                    .mt(px(metric::BTN_SM))
-                    .p(space(0))
-                    .rounded(px(metric::RADIUS_MD))
-                    .border_1()
-                    .border_color(hsla(p.border_strong))
-                    .bg(hsla(p.bg_raised))
-                    .shadow_lg()
-                    .on_mouse_down_out(cx.listener(|v, _, _, cx| v.close_menu(cx)))
-                    .child(
-                        item(format!("menu-logs-{}", r.id), copy::MENU_LOGS, false)
-                            .on_click(cx.listener(move |v, _, _, cx| v.open_logs(&logs, cx))),
-                    )
-                    .when(actions.restart, |m| {
-                        m.child(
-                            item(format!("menu-restart-{}", r.id), copy::MENU_RESTART, false)
+            // Local origin = the ⋯ button's top-left; the menu's top-right sits at the
+            // button's bottom-right (L6).
+            anchored()
+                .position_mode(AnchoredPositionMode::Local)
+                .position(point(px(metric::BTN_SM), px(metric::BTN_SM)))
+                .anchor(Anchor::TopRight)
+                .child(
+                    v_flex()
+                        .id("row-menu")
+                        .debug_selector(|| "row-menu".into())
+                        .occlude()
+                        .p(space(0))
+                        .rounded(px(metric::RADIUS_MD))
+                        .border_1()
+                        .border_color(hsla(p.border_strong))
+                        .bg(hsla(p.bg_raised))
+                        .shadow_lg()
+                        .on_mouse_down_out(cx.listener(|v, _, _, cx| v.close_menu(cx)))
+                        .child({
+                            let key = r.id.clone();
+                            item(format!("menu-logs-{}", r.id), copy::MENU_LOGS, false)
+                                .debug_selector(move || format!("menu-logs-{key}"))
+                                .on_click(cx.listener(move |v, _, window, cx| {
+                                    v.open_logs(&logs, cx);
+                                    // Focus the panel so Escape closes it (N6).
+                                    window.focus(&v.log_focus, cx);
+                                }))
+                        })
+                        .when(actions.restart, |m| {
+                            m.child(
+                                item(format!("menu-restart-{}", r.id), copy::MENU_RESTART, false)
+                                    .on_click(cx.listener(move |v, _, _, cx| {
+                                        v.close_menu(cx);
+                                        v.restart(&restart, cx)
+                                    })),
+                            )
+                        })
+                        .child(
+                            item(format!("menu-remove-{}", r.id), copy::MENU_REMOVE, true)
                                 .on_click(cx.listener(move |v, _, _, cx| {
                                     v.close_menu(cx);
-                                    v.restart(&restart, cx)
+                                    v.request_remove(&remove, cx)
                                 })),
-                        )
-                    })
-                    .child(
-                        item(format!("menu-remove-{}", r.id), copy::MENU_REMOVE, true).on_click(
-                            cx.listener(move |v, _, _, cx| {
-                                v.close_menu(cx);
-                                v.request_remove(&remove, cx)
-                            }),
                         ),
-                    ),
-            ),
+                ),
         )
         .into_any_element()
     }
@@ -271,6 +282,10 @@ impl EnginePanel {
                 div()
                     .child(
                         row_icon(SharedString::from(format!("more-{}", r.id)), Icon::More, p)
+                            .debug_selector({
+                                let key = r.id.clone();
+                                move || format!("ctr-more-{key}")
+                            })
                             .on_click(cx.listener(move |v, _, _, cx| v.toggle_menu(&more, cx))),
                     )
                     .when(open, |d| d.child(self.row_menu(r, p, cx))),
@@ -330,8 +345,6 @@ impl EnginePanel {
                         })
                         .child(r.status_text.clone()),
                 )
-                .child(col(4).child(text(copy::NONE, p.text_2)))
-                .child(col(5).child(text(copy::NONE, p.text_2)))
                 .child(self.row_actions_view(r, selected, p, cx))
         });
         v_flex()
@@ -542,6 +555,15 @@ impl EnginePanel {
             format!("{} · {}", log.image, short_image_id(&log.container))
         };
         v_flex()
+            .id("log-panel")
+            .debug_selector(|| "log-panel".into())
+            .track_focus(&self.log_focus)
+            .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    v.close_logs(cx);
+                }
+            }))
             .h(px(metric::LOG_PANEL_H))
             .flex_none()
             .border_t_1()
@@ -554,38 +576,65 @@ impl EnginePanel {
                     .pl(space(4))
                     .pr(space(2))
                     .gap(space(1))
-                    .child(icon(Icon::Terminal, hsla(p.text_2)))
                     .child(
                         div()
+                            .flex_none()
+                            .child(icon(Icon::Terminal, hsla(p.text_2))),
+                    )
+                    // Name and meta give way with an ellipsis; the controls never do (N6).
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_shrink(1.)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
                             .text_size(px(font::BODY.size))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(hsla(p.text))
                             .child(log.name.clone()),
                     )
-                    .child(mono(meta, p.text_2))
-                    .child(div().flex_1())
                     .child(
-                        h_flex()
-                            .gap(space(0))
-                            .child(switch("log-time", show_time, p, move |on, _, cx| {
-                                if let Some(view) = entity.upgrade() {
-                                    view.update(cx, |v, cx| v.set_show_time(on, cx));
-                                }
-                            }))
-                            .child(small(copy::LOG_TIME, p.text)),
+                        mono(meta, p.text_2)
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis(),
                     )
                     .child(
                         h_flex()
-                            .gap(space(0))
-                            .child(switch("log-follow", follow, p, move |on, _, cx| {
-                                if let Some(view) = entity2.upgrade() {
-                                    view.update(cx, |v, cx| v.set_follow(on, cx));
-                                }
-                            }))
-                            .child(small(copy::LOG_FOLLOW, p.text).font_weight(FontWeight::MEDIUM)),
+                            .flex_none()
+                            .gap(space(1))
+                            .debug_selector(|| "log-switches".into())
+                            .child(
+                                h_flex()
+                                    .gap(space(0))
+                                    .child(switch("log-time", show_time, p, move |on, _, cx| {
+                                        if let Some(view) = entity.upgrade() {
+                                            view.update(cx, |v, cx| v.set_show_time(on, cx));
+                                        }
+                                    }))
+                                    .child(small(copy::LOG_TIME, p.text)),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap(space(0))
+                                    .child(switch("log-follow", follow, p, move |on, _, cx| {
+                                        if let Some(view) = entity2.upgrade() {
+                                            view.update(cx, |v, cx| v.set_follow(on, cx));
+                                        }
+                                    }))
+                                    .child(
+                                        small(copy::LOG_FOLLOW, p.text)
+                                            .font_weight(FontWeight::MEDIUM),
+                                    ),
+                            ),
                     )
                     .child(
                         icon_button("log-close", icon(Icon::Close, hsla(p.text_2)), p)
+                            .flex_none()
+                            .debug_selector(|| "log-close".into())
                             .on_click(cx.listener(|v, _, _, cx| v.close_logs(cx))),
                     ),
             )
