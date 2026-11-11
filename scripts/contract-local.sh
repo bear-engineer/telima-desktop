@@ -7,7 +7,7 @@ PROFILE="telima-test-d"
 SOCKET="$HOME/.colima/$PROFILE/docker.sock"
 
 cleanup() {
-  colima delete -f "$PROFILE" || true
+  colima delete -f --data "$PROFILE" || true
 }
 trap cleanup EXIT
 

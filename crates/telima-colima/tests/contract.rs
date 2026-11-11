@@ -13,7 +13,7 @@ struct Cleanup(std::path::PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::process::Command::new(&self.0)
-            .args(["delete", "-f", TEST_PROFILE])
+            .args(["delete", "-f", "--data", TEST_PROFILE])
             .stdin(std::process::Stdio::null())
             .output();
     }
