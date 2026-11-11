@@ -38,6 +38,10 @@ The app id is `APP_ID` in `crates/telima-ui/src/lib.rs`; the scripts below read 
 - Linux: install `packaging/linux/<app id>.desktop` to `~/.local/share/applications/` and copy `assets/icon/hicolor/` into `~/.local/share/icons/hicolor/`. The window reports the same app id, so the desktop shows the icon.
 - Icons: `assets/icon/telima.png` (1024 px) is the only master. `scripts/icons.sh` (macOS) regenerates the sizes and `telima.icns` from it. See `docs/icon.md` for where it came from.
 
+## Tray
+
+telima keeps running in the macOS menu bar / Linux system tray after the window is closed; quit from the tray menu. If the icon is missing on macOS, the menu bar is probably crowded (look behind "«", Cmd-drag to reorder, check the System Settings menu bar allow list). GNOME needs the AppIndicator extension. Running telima twice shows two icons. Details (Korean): [docs/tray.md](docs/tray.md).
+
 ## Layout
 
 Dependencies point inward only; `scripts/check_layers.py` enforces it in CI.
