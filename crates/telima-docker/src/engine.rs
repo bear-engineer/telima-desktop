@@ -222,8 +222,15 @@ fn disk_usage_retry_delay(
     attempt: u32,
     err: &bollard::errors::Error,
 ) -> Option<std::time::Duration> {
-    let _ = (attempt, err, DISK_USAGE_MAX_ATTEMPTS);
-    None
+    let transient = matches!(
+        err,
+        bollard::errors::Error::DockerResponseServerError { status_code, .. }
+            if (500..600).contains(status_code)
+    );
+    if !transient || attempt + 1 >= DISK_USAGE_MAX_ATTEMPTS {
+        return None;
+    }
+    Some(std::time::Duration::from_millis(250 << attempt))
 }
 
 #[cfg(test)]
