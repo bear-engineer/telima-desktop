@@ -1019,6 +1019,7 @@ impl MainView {
                             ))
                             .child(
                                 button("prune-cache", "캐시 정리", ButtonVariant::Ghost, p)
+                                    .debug_selector(|| "prune-cache".to_string())
                                     .on_click(cx.listener(|v, _, _, cx| v.prune(cx))),
                             ),
                     )
@@ -1313,6 +1314,7 @@ impl MainView {
         };
         let delete = if ins.can_delete {
             button("delete", "프로필 삭제", ButtonVariant::Danger, p)
+                .debug_selector(|| "delete".to_string())
                 .on_click(cx.listener(|v, _, _, cx| v.delete(cx)))
         } else {
             crate::components::button::button_disabled("delete", "프로필 삭제", p)

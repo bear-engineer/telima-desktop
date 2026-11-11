@@ -715,6 +715,10 @@ impl ProfileEditor {
                 p,
             )
             .flex_1()
+            .debug_selector({
+                let id = format!("mount-path-{i}");
+                move || id.clone()
+            })
             .when(enabled, |b| {
                 b.on_click(cx.listener(move |_, _, window, cx| window.focus(&focus, cx)))
                     .on_key_down(cx.listener(move |v, ev: &KeyDownEvent, _, cx| {

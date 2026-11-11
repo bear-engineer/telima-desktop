@@ -551,6 +551,7 @@ impl EnginePanel {
                                 p,
                             )
                             .child(icon(Icon::Trash, hsla(p.text_2)))
+                            .debug_selector(|| "remove-exited".to_string())
                             .on_click(cx.listener(|v, _, _, cx| v.request_remove_exited(cx))),
                         )
                     })

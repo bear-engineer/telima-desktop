@@ -552,3 +552,27 @@ fn progress_view_has_no_second_name_or_chip_and_no_korean_literals() {
         "Korean literals in progress.rs: {hangul:?}"
     );
 }
+
+/// Live L6p: a new mount row started at x≈315, left of the field column (352): the 96px label
+/// shrank because the mount row is wider than its share.
+#[gpui_kit::test]
+fn a_new_mount_row_starts_at_the_field_column(cx: &mut TestAppContext) {
+    let (_, _, app) = setup(&[]);
+    let (form, cx) = cx.add_window_view(|_, cx| ProfileEditor::create(app, HostOs::MacOs, cx));
+    cx.simulate_resize(size(px(metric::WINDOW_W), px(metric::WINDOW_H)));
+    cx.run_until_parked();
+    form.update(cx, |f, cx| f.add_mount(cx));
+    cx.run_until_parked();
+    let name = cx
+        .debug_bounds("profile-name")
+        .expect("name field rendered");
+    let path = cx
+        .debug_bounds("mount-path-0")
+        .expect("mount path rendered");
+    assert!(
+        (path.left() - name.left()).abs() < px(1.0),
+        "mount path left {:?} != field column {:?}",
+        path.left(),
+        name.left()
+    );
+}

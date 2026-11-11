@@ -134,6 +134,10 @@ type Parts = (Arc<FakeVm>, Arc<QueueSpawner>, Arc<Mutex<Vec<String>>>, App);
 
 /// Fake VM, engine and spawner wired into an app facade, without a view.
 fn parts(tweak: impl FnOnce(&mut FakeVm)) -> Parts {
+    parts_with(tweak, vec![container("c1", "pg-main")])
+}
+
+fn parts_with(tweak: impl FnOnce(&mut FakeVm), containers: Vec<Container>) -> Parts {
     let mut vm = FakeVm {
         progress_lines: vec!["starting colima".into(), "done".into()],
         info: running_info(),
@@ -149,7 +153,7 @@ fn parts(tweak: impl FnOnce(&mut FakeVm)) -> Parts {
     tweak(&mut vm);
     let vm = Arc::new(vm);
     let engine = FakeEngine::default();
-    *engine.containers.lock().unwrap() = vec![container("c1", "pg-main")];
+    *engine.containers.lock().unwrap() = containers;
     let engine = Arc::new(engine);
     let spawner = Arc::new(QueueSpawner::default());
     let asked = Arc::new(Mutex::new(Vec::new()));
@@ -674,6 +678,161 @@ fn prune_confirm_takes_focus_and_escape_closes_it(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(view.read_with(cx, |v, _| v.prune_confirm().is_none()));
     assert!(!vm.calls().contains(&"prune_cache".to_owned()));
+}
+
+/// Opens [`MainView`] the way `telima` does: inside the Base Root (`gpui_kit::open_window`)
+/// at the main window size, with the app-wide setup run first.
+fn real_window(
+    app: App,
+    cx: &mut TestAppContext,
+) -> (Entity<MainView>, &mut gpui_kit::VisualTestContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::init(cx);
+    });
+    let mut built = None;
+    let (_, vcx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| MainView::new(app, cx));
+        built = Some(view.clone());
+        gpui_kit::base::Root::new(view, window, cx)
+    });
+    vcx.simulate_resize(gpui_kit::size(
+        gpui_kit::px(crate::theme::metric::WINDOW_W),
+        gpui_kit::px(crate::theme::metric::WINDOW_H),
+    ));
+    (built.unwrap(), vcx)
+}
+
+#[gpui_kit::test]
+fn prune_opened_by_a_click_in_the_real_window_closes_on_escape(cx: &mut TestAppContext) {
+    // F2 live: the unit test above passed while the running app ignored Escape.
+    let (vm, spawner, _, app) = parts(|_| {});
+    let (view, cx) = real_window(app, cx);
+    spawner.run_all();
+    view.update(cx, |v, cx| v.pump(cx));
+    cx.run_until_parked();
+    let b = cx.debug_bounds("prune-cache").expect("캐시 정리 rendered");
+    cx.simulate_click(b.center(), gpui_kit::Modifiers::none());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.prune_confirm().is_some()));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |v, _| v.prune_confirm().is_none()),
+        "Escape left the prune confirm open"
+    );
+    assert!(!vm.calls().contains(&"prune_cache".to_owned()));
+}
+
+/// The real window with `default` selected and a running plus an exited container listed,
+/// so the engine panel shows 종료된 1개 삭제.
+fn real_main(
+    cx: &mut TestAppContext,
+) -> (
+    Entity<MainView>,
+    Arc<FakeVm>,
+    Arc<QueueSpawner>,
+    &mut gpui_kit::VisualTestContext,
+) {
+    let mut old = container("c9", "old-job");
+    old.state = ContainerState::Exited;
+    let (vm, spawner, _, app) = parts_with(|_| {}, vec![container("c1", "pg-main"), old]);
+    let (view, cx) = real_window(app, cx);
+    spawner.run_all();
+    view.update(cx, |v, cx| v.pump(cx));
+    view.update(cx, |v, cx| v.select("default", cx));
+    for _ in 0..3 {
+        spawner.run_all();
+        view.update(cx, |v, cx| {
+            v.pump(cx);
+            v.engine().update(cx, |e, cx| e.pump(cx));
+        });
+        cx.run_until_parked();
+    }
+    (view, vm, spawner, cx)
+}
+
+fn engine_dialog_open(view: &Entity<MainView>, cx: &mut gpui_kit::VisualTestContext) -> bool {
+    view.read_with(cx, |v, cx| v.engine().read(cx).dialog().is_some())
+}
+
+fn click(cx: &mut gpui_kit::VisualTestContext, selector: &'static str) {
+    let b = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} rendered"));
+    cx.simulate_click(b.center(), gpui_kit::Modifiers::none());
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn engine_confirm_opened_by_a_click_in_the_real_window_closes_on_escape(cx: &mut TestAppContext) {
+    // F2 live: the reviewer's "prune confirm" was 종료된 N개 삭제, the engine panel's dialog,
+    // which never took focus, so Escape had no listener on the focus path.
+    let (view, vm, _, cx) = real_main(cx);
+    click(cx, "remove-exited");
+    assert!(
+        engine_dialog_open(&view, cx),
+        "종료된 1개 삭제 opens its confirm"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(
+        !engine_dialog_open(&view, cx),
+        "Escape left the engine confirm open"
+    );
+    assert!(!vm.calls().iter().any(|c| c.contains("remove")));
+}
+
+#[gpui_kit::test]
+fn an_open_dialog_blocks_the_page_and_a_second_dialog(cx: &mut TestAppContext) {
+    // F2 live: with the delete dialog open, 종료된 3개 삭제 behind the scrim opened a second
+    // dialog under it. One dialog at a time; clicks behind a scrim do nothing.
+    let (view, _, spawner, cx) = real_main(cx);
+    click(cx, "remove-exited");
+    assert!(engine_dialog_open(&view, cx));
+    click(cx, "prune-cache");
+    click(cx, "delete");
+    spawner.run_all();
+    view.update(cx, |v, cx| {
+        v.pump(cx);
+        v.prune(cx);
+        v.delete(cx);
+    });
+    spawner.run_all();
+    view.update(cx, |v, cx| v.pump(cx));
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |v, _| v.prune_confirm().is_none()),
+        "캐시 정리 opened over the engine confirm"
+    );
+    assert!(
+        view.read_with(cx, |v, _| v.delete_confirm().is_none()),
+        "프로필 삭제 opened over the engine confirm"
+    );
+
+    view.update(cx, |v, cx| v.engine().update(cx, |e, cx| e.dismiss(cx)));
+    view.update(cx, |v, cx| v.delete(cx));
+    spawner.run_all();
+    view.update(cx, |v, cx| v.pump(cx));
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.delete_confirm().is_some()));
+    click(cx, "remove-exited");
+    click(cx, "prune-cache");
+    assert!(
+        !engine_dialog_open(&view, cx),
+        "종료된 1개 삭제 behind the delete scrim opened a second dialog"
+    );
+    assert!(
+        view.read_with(cx, |v, _| v.prune_confirm().is_none()),
+        "캐시 정리 behind the delete scrim opened a second dialog"
+    );
+    view.update(cx, |v, cx| {
+        v.engine().update(cx, |e, cx| e.request_remove_exited(cx))
+    });
+    assert!(
+        !engine_dialog_open(&view, cx),
+        "the engine confirm opened over the delete dialog"
+    );
 }
 
 #[gpui_kit::test]

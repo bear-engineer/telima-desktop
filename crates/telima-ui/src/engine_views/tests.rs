@@ -777,3 +777,45 @@ fn log_panel_uses_the_motion_tokens() {
         assert_eq!((a.easing)(t), motion::ease_out(t));
     }
 }
+
+/// Live L6p: after a resize past ID_COL_BREAKPOINT the ID column appeared only on the next
+/// pointer event. The measured width must re-lay out the table by itself.
+#[gpui_kit::test]
+fn id_column_follows_a_window_resize_without_another_event(cx: &mut TestAppContext) {
+    let (_, spawner, _, app) = fake_app();
+    let (view, cx) = cx.add_window_view(|_, cx| EnginePanel::new(app, cx));
+    let profile = ProfileName::parse("dev").unwrap();
+    view.update(cx, |v, cx| v.set_target(Some(profile), Tab::Containers, cx));
+    cx.simulate_resize(size(
+        px(metric::ID_COL_BREAKPOINT - 120.0),
+        px(metric::WINDOW_H),
+    ));
+    spawner.run_all();
+    view.update(cx, |v, cx| v.pump(cx));
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("ctr-cell-c1-1").is_none(),
+        "narrow pane shows no ID"
+    );
+    cx.simulate_resize(size(px(1440.0), px(metric::WINDOW_H)));
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("ctr-cell-c1-1").is_some(),
+        "the ID column waited for another event after the resize"
+    );
+}
+
+/// Live L6p: the ID tooltip was light-on-dark in the dark theme. gpui-component's Tooltip
+/// follows its own theme, not the telima palette; tooltips use the palette-aware one.
+#[test]
+fn tooltips_use_the_telima_palette() {
+    for (file, src) in [
+        ("engine_views/render.rs", include_str!("render.rs")),
+        ("shell/mod.rs", include_str!("../shell/mod.rs")),
+    ] {
+        assert!(
+            !src.contains("component::tooltip::Tooltip"),
+            "{file} builds gpui-component's Tooltip, which ignores the telima palette"
+        );
+    }
+}
