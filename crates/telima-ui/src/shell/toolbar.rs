@@ -22,7 +22,7 @@ use crate::components::icons::{Icon, icon};
 use crate::components::status::status_shape;
 use crate::components::tooltip::text_tip;
 use crate::style::{hsla, space};
-use crate::theme::{Palette, font, metric};
+use crate::theme::{Palette, Rgb, font, metric};
 
 /// One profile row of the toolbar dropdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,7 +316,7 @@ impl MainView {
                 .map(|(i, r)| self.menu_row(r, highlight == Some(i), p, cx))
                 .collect();
             let new_profile = menu_item(SharedString::from("profile-menu-new"), p)
-                .when(highlight == Some(last), |d| d.bg(hsla(p.bg_hover)))
+                .when(highlight == Some(last), |d| d.bg(hsla(menu_hover(p))))
                 .on_click(cx.listener(|v, _, _, cx| {
                     v.run_command(&AppCommand::NewProfile, cx);
                 }))
@@ -378,7 +378,7 @@ impl MainView {
         };
         let name = r.name.clone();
         menu_item(SharedString::from(format!("profile-menu-{}", r.name)), p)
-            .when(highlighted, |d| d.bg(hsla(p.bg_hover)))
+            .when(highlighted, |d| d.bg(hsla(menu_hover(p))))
             .on_click(cx.listener(move |v, _, _, cx| v.pick_profile(&name, cx)))
             .child(check_slot(r.current, p))
             .child(status_shape(
@@ -475,8 +475,18 @@ fn menu_item(id: SharedString, p: &Palette) -> Stateful<Div> {
         .cursor_pointer()
         .text_size(px(font::BODY.size))
         .text_color(hsla(p.text))
-        .hover(|s| s.bg(hsla(p.bg_hover)))
+        .hover(|s| s.bg(hsla(menu_hover(p))))
         .active(|s| s.bg(hsla(p.bg_pressed)))
+}
+
+/// Hover and keyboard-highlight colour of a dropdown row. The menu sits on `bg_raised`;
+/// where that equals `bg_hover` (dark theme) the row would not change, so use `bg_pressed`.
+fn menu_hover(p: &Palette) -> Rgb {
+    if p.bg_hover == p.bg_raised {
+        p.bg_pressed
+    } else {
+        p.bg_hover
+    }
 }
 
 /// Icon-sized slot holding the check mark of the current profile.
@@ -485,4 +495,18 @@ fn check_slot(checked: bool, p: &Palette) -> Div {
         .flex_none()
         .size(px(metric::ICON))
         .when(checked, |d| d.child(icon(Icon::Check, hsla(p.text))))
+}
+
+#[cfg(test)]
+mod menu_hover_tests {
+    use super::menu_hover;
+    use crate::theme::{Appearance, palette};
+
+    #[test]
+    fn dropdown_row_highlight_differs_from_menu_background_in_both_themes() {
+        for a in [Appearance::Light, Appearance::Dark] {
+            let p = palette(a);
+            assert_ne!(menu_hover(p), p.bg_raised, "{a:?}");
+        }
+    }
 }
