@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=telima
+GenericName=Colima 관리자
+Comment=Colima 프로필과 컨테이너·이미지·볼륨을 관리합니다
+Exec=telima
+Icon=io.github.bear_engineer.telima
+StartupWMClass=io.github.bear_engineer.telima
+Terminal=false
+Categories=Development;Utility;
+Keywords=colima;docker;container;

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon/telima.png" width="128" alt="telima icon: a pixel teddy bear hugging a container"></p>
+
 # telima
 
 A desktop app for [Colima](https://github.com/abiosoft/colima) on macOS and Linux, written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui).
@@ -27,6 +29,14 @@ Requirements:
 cargo run -p telima
 cargo test --workspace
 ```
+
+## Package
+
+The app id is `APP_ID` in `crates/telima-ui/src/lib.rs`; the scripts below read it from there.
+
+- macOS: `scripts/bundle-macos.sh` builds an unsigned `target/release/bundle/telima.app` with the icon. `cargo run` shows the generic Dock icon.
+- Linux: install `packaging/linux/<app id>.desktop` to `~/.local/share/applications/` and copy `assets/icon/hicolor/` into `~/.local/share/icons/hicolor/`. The window reports the same app id, so the desktop shows the icon.
+- Icons: `assets/icon/telima.png` (1024 px) is the only master. `scripts/icons.sh` (macOS) regenerates the sizes and `telima.icns` from it. See `docs/icon.md` for where it came from.
 
 ## Layout
 

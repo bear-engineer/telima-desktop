@@ -12,6 +12,10 @@ use gpui_kit::*;
 /// Product name shown in the window. Single definition used by the title bar and tests.
 pub const APP_NAME: &str = "telima";
 
+/// Reverse-DNS application id: the Linux window app id, the `.desktop` file and icon name, and
+/// the macOS bundle identifier. Packaging scripts read it from here (`scripts/test_packaging.py`).
+pub const APP_ID: &str = "io.github.bear_engineer.telima";
+
 /// Root view of the main window.
 #[derive(Default)]
 pub struct RootView;
@@ -56,6 +60,7 @@ pub fn main_window_options(cx: &App) -> WindowOptions {
                 px(metric::TRAFFIC_LIGHT_Y),
             )),
         }),
+        app_id: Some(APP_ID.into()),
         ..Default::default()
     }
 }
@@ -91,10 +96,5 @@ mod tests {
     fn main_window_carries_the_app_id_for_linux_desktop_matching(cx: &mut TestAppContext) {
         let options = cx.update(|cx| super::main_window_options(cx));
         assert_eq!(options.app_id.as_deref(), Some(super::APP_ID));
-    }
-
-    #[test]
-    fn app_icon_is_the_bundled_png() {
-        assert_eq!(&super::APP_ICON_PNG[..8], b"\x89PNG\r\n\x1a\n");
     }
 }
