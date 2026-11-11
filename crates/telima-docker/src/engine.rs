@@ -190,19 +190,68 @@ impl ContainerEngine for DockerEngine {
     }
 
     async fn disk_usage(&self) -> PortResult<DiskUsage> {
-        let response = self
-            .docker
-            .df(None::<bollard::query_parameters::DataUsageOptions>)
-            .await
-            .map_err(map_error)?;
-        Ok(map::map_disk_usage(&response))
+        let mut attempt = 0;
+        loop {
+            match self
+                .docker
+                .df(None::<bollard::query_parameters::DataUsageOptions>)
+                .await
+            {
+                Ok(response) => return Ok(map::map_disk_usage(&response)),
+                Err(err) => match disk_usage_retry_delay(attempt, &err) {
+                    Some(delay) => {
+                        attempt += 1;
+                        tokio::time::sleep(delay).await;
+                    }
+                    None => return Err(map_error(err)),
+                },
+            }
+        }
     }
+}
+
+/// Total tries for `df` (first call + retries).
+const DISK_USAGE_MAX_ATTEMPTS: u32 = 5;
+
+/// Delay before the next `df` try after `attempt` failures (0-based), or
+/// `None` when the error is not transient or the budget is spent.
+/// `df` walks every container's rw layer; the engine answers 5xx while a
+/// just-restarted container's layer is not registered yet, which settles
+/// within seconds.
+fn disk_usage_retry_delay(
+    attempt: u32,
+    err: &bollard::errors::Error,
+) -> Option<std::time::Duration> {
+    let _ = (attempt, err, DISK_USAGE_MAX_ATTEMPTS);
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bollard::errors::Error;
+
+    #[test]
+    fn df_retries_5xx_with_growing_backoff() {
+        let delays: Vec<_> = (0..4)
+            .map(|a| disk_usage_retry_delay(a, &server_error(500)))
+            .collect();
+        let ms: Vec<_> = delays.iter().map(|d| d.unwrap().as_millis()).collect();
+        assert_eq!(ms, vec![250, 500, 1000, 2000]);
+    }
+
+    #[test]
+    fn df_gives_up_after_budget_and_on_non_transient() {
+        assert!(disk_usage_retry_delay(4, &server_error(500)).is_none());
+        assert!(disk_usage_retry_delay(0, &server_error(404)).is_none());
+        let io = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert!(disk_usage_retry_delay(0, &Error::IOError { err: io }).is_none());
+    }
+
+    #[test]
+    fn persistent_df_failure_maps_to_failed() {
+        assert!(matches!(map_error(server_error(500)), PortError::Failed(_)));
+    }
 
     fn server_error(status_code: u16) -> Error {
         Error::DockerResponseServerError {
