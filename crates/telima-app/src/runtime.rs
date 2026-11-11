@@ -1,4 +1,493 @@
 //! Async bridge between views and use cases. See docs/adr/0001-async-bridge.md.
+//!
+//! Views call [`App`] with `Send` callbacks. The work runs on whatever [`Spawner`] the binary
+//! supplies (a tokio runtime in production), so this crate and the UI stay free of tokio.
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use futures::future::{AbortHandle, abortable};
+use telima_core::container::{Container, DiskUsage, Image, LogLine, PruneReport, Volume};
+use telima_core::ports::{ContainerEngine, PortResult, ProgressSink, VmManager};
+use telima_core::profile::{HostOs, Profile, ProfileName, ProfileSpec, ProgressEvent};
+
+use crate::AppError;
+use crate::engine::EngineService;
+use crate::profiles::{Lifecycle, ProfileService};
+
+/// An owned, `Send` future behind a pointer.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Sink for container log lines, the engine-side twin of [`ProgressSink`].
+pub type LogSink<'a> = &'a mut (dyn FnMut(LogLine) + Send);
+
+/// Runs background work to completion. The binary implements this over its tokio runtime.
+pub trait Spawner: Send + Sync {
+    fn spawn(&self, work: BoxFuture<'static, ()>);
+}
+
+/// Object-safe form of [`VmManager`]. Every `VmManager` is one.
+pub trait DynVm: Send + Sync {
+    fn list(&self) -> BoxFuture<'_, PortResult<Vec<Profile>>>;
+    fn spec<'a>(&'a self, name: &'a ProfileName) -> BoxFuture<'a, PortResult<ProfileSpec>>;
+    fn create<'a>(
+        &'a self,
+        spec: &'a ProfileSpec,
+        progress: ProgressSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>>;
+    fn start<'a>(
+        &'a self,
+        name: &'a ProfileName,
+        progress: ProgressSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>>;
+    fn stop<'a>(
+        &'a self,
+        name: &'a ProfileName,
+        progress: ProgressSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>>;
+    fn restart<'a>(
+        &'a self,
+        name: &'a ProfileName,
+        progress: ProgressSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>>;
+    fn update<'a>(&'a self, spec: &'a ProfileSpec) -> BoxFuture<'a, PortResult<()>>;
+    fn delete<'a>(&'a self, name: &'a ProfileName) -> BoxFuture<'a, PortResult<()>>;
+}
+
+impl<T: VmManager> DynVm for T {
+    fn list(&self) -> BoxFuture<'_, PortResult<Vec<Profile>>> {
+        Box::pin(VmManager::list(self))
+    }
+    fn spec<'a>(&'a self, name: &'a ProfileName) -> BoxFuture<'a, PortResult<ProfileSpec>> {
+        Box::pin(VmManager::spec(self, name))
+    }
+    fn create<'a>(
+        &'a self,
+        spec: &'a ProfileSpec,
+        progress: ProgressSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(VmManager::create(self, spec, progress))
+    }
+    fn start<'a>(
+        &'a self,
+        name: &'a ProfileName,
+        progress: ProgressSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(VmManager::start(self, name, progress))
+    }
+    fn stop<'a>(
+        &'a self,
+        name: &'a ProfileName,
+        progress: ProgressSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(VmManager::stop(self, name, progress))
+    }
+    fn restart<'a>(
+        &'a self,
+        name: &'a ProfileName,
+        progress: ProgressSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(VmManager::restart(self, name, progress))
+    }
+    fn update<'a>(&'a self, spec: &'a ProfileSpec) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(VmManager::update(self, spec))
+    }
+    fn delete<'a>(&'a self, name: &'a ProfileName) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(VmManager::delete(self, name))
+    }
+}
+
+/// Object-safe form of [`ContainerEngine`]. Every `ContainerEngine` is one.
+pub trait DynEngine: Send + Sync {
+    fn containers(&self) -> BoxFuture<'_, PortResult<Vec<Container>>>;
+    fn restart_container<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>>;
+    fn remove_container<'a>(&'a self, id: &'a str, force: bool) -> BoxFuture<'a, PortResult<()>>;
+    fn logs<'a>(
+        &'a self,
+        id: &'a str,
+        follow: bool,
+        sink: LogSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>>;
+    fn images(&self) -> BoxFuture<'_, PortResult<Vec<Image>>>;
+    fn remove_image<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>>;
+    fn prune_images(&self) -> BoxFuture<'_, PortResult<PruneReport>>;
+    fn volumes(&self) -> BoxFuture<'_, PortResult<Vec<Volume>>>;
+    fn remove_volume<'a>(&'a self, name: &'a str) -> BoxFuture<'a, PortResult<()>>;
+    fn prune_volumes(&self) -> BoxFuture<'_, PortResult<PruneReport>>;
+    fn disk_usage(&self) -> BoxFuture<'_, PortResult<DiskUsage>>;
+}
+
+impl<T: ContainerEngine> DynEngine for T {
+    fn containers(&self) -> BoxFuture<'_, PortResult<Vec<Container>>> {
+        Box::pin(ContainerEngine::containers(self))
+    }
+    fn restart_container<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(ContainerEngine::restart_container(self, id))
+    }
+    fn remove_container<'a>(&'a self, id: &'a str, force: bool) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(ContainerEngine::remove_container(self, id, force))
+    }
+    fn logs<'a>(
+        &'a self,
+        id: &'a str,
+        follow: bool,
+        sink: LogSink<'a>,
+    ) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(ContainerEngine::logs(self, id, follow, sink))
+    }
+    fn images(&self) -> BoxFuture<'_, PortResult<Vec<Image>>> {
+        Box::pin(ContainerEngine::images(self))
+    }
+    fn remove_image<'a>(&'a self, id: &'a str) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(ContainerEngine::remove_image(self, id))
+    }
+    fn prune_images(&self) -> BoxFuture<'_, PortResult<PruneReport>> {
+        Box::pin(ContainerEngine::prune_images(self))
+    }
+    fn volumes(&self) -> BoxFuture<'_, PortResult<Vec<Volume>>> {
+        Box::pin(ContainerEngine::volumes(self))
+    }
+    fn remove_volume<'a>(&'a self, name: &'a str) -> BoxFuture<'a, PortResult<()>> {
+        Box::pin(ContainerEngine::remove_volume(self, name))
+    }
+    fn prune_volumes(&self) -> BoxFuture<'_, PortResult<PruneReport>> {
+        Box::pin(ContainerEngine::prune_volumes(self))
+    }
+    fn disk_usage(&self) -> BoxFuture<'_, PortResult<DiskUsage>> {
+        Box::pin(ContainerEngine::disk_usage(self))
+    }
+}
+
+/// Lets the generic use cases run over a type-erased VM manager.
+struct SharedVm(Arc<dyn DynVm>);
+
+impl VmManager for SharedVm {
+    async fn list(&self) -> PortResult<Vec<Profile>> {
+        self.0.list().await
+    }
+    async fn spec(&self, name: &ProfileName) -> PortResult<ProfileSpec> {
+        self.0.spec(name).await
+    }
+    async fn create(&self, spec: &ProfileSpec, progress: ProgressSink<'_>) -> PortResult<()> {
+        self.0.create(spec, progress).await
+    }
+    async fn start(&self, name: &ProfileName, progress: ProgressSink<'_>) -> PortResult<()> {
+        self.0.start(name, progress).await
+    }
+    async fn stop(&self, name: &ProfileName, progress: ProgressSink<'_>) -> PortResult<()> {
+        self.0.stop(name, progress).await
+    }
+    async fn restart(&self, name: &ProfileName, progress: ProgressSink<'_>) -> PortResult<()> {
+        self.0.restart(name, progress).await
+    }
+    async fn update(&self, spec: &ProfileSpec) -> PortResult<()> {
+        self.0.update(spec).await
+    }
+    async fn delete(&self, name: &ProfileName) -> PortResult<()> {
+        self.0.delete(name).await
+    }
+}
+
+/// Lets the generic use cases run over a type-erased engine.
+struct SharedEngine(Arc<dyn DynEngine>);
+
+impl ContainerEngine for SharedEngine {
+    async fn containers(&self) -> PortResult<Vec<Container>> {
+        self.0.containers().await
+    }
+    async fn restart_container(&self, id: &str) -> PortResult<()> {
+        self.0.restart_container(id).await
+    }
+    async fn remove_container(&self, id: &str, force: bool) -> PortResult<()> {
+        self.0.remove_container(id, force).await
+    }
+    async fn logs(&self, id: &str, follow: bool, sink: LogSink<'_>) -> PortResult<()> {
+        self.0.logs(id, follow, sink).await
+    }
+    async fn images(&self) -> PortResult<Vec<Image>> {
+        self.0.images().await
+    }
+    async fn remove_image(&self, id: &str) -> PortResult<()> {
+        self.0.remove_image(id).await
+    }
+    async fn prune_images(&self) -> PortResult<PruneReport> {
+        self.0.prune_images().await
+    }
+    async fn volumes(&self) -> PortResult<Vec<Volume>> {
+        self.0.volumes().await
+    }
+    async fn remove_volume(&self, name: &str) -> PortResult<()> {
+        self.0.remove_volume(name).await
+    }
+    async fn prune_volumes(&self) -> PortResult<PruneReport> {
+        self.0.prune_volumes().await
+    }
+    async fn disk_usage(&self) -> PortResult<DiskUsage> {
+        self.0.disk_usage().await
+    }
+}
+
+/// Handle to work started through [`App`]. Dropping it lets the work finish.
+#[derive(Debug, Clone)]
+pub struct Task(AbortHandle);
+
+impl Task {
+    /// Stop the work at its next await point. The `done` callback is not called afterwards.
+    pub fn cancel(&self) {
+        self.0.abort();
+    }
+}
+
+type EngineFactory = dyn Fn(&ProfileName) -> PortResult<Arc<dyn DynEngine>> + Send + Sync;
+
+struct Inner {
+    profiles: ProfileService<SharedVm>,
+    engine_for: Box<EngineFactory>,
+    spawner: Arc<dyn Spawner>,
+}
+
+impl Inner {
+    fn engine(&self, profile: &ProfileName) -> Result<EngineService<SharedEngine>, AppError> {
+        Ok(EngineService::new(SharedEngine((self.engine_for)(
+            profile,
+        )?)))
+    }
+}
+
+/// Everything a view may ask of the application. Cheap to clone, safe to share across threads.
+///
+/// Each method returns at once; the use case runs on the [`Spawner`] and `done` receives the
+/// result there. Callbacks run on the spawner's thread, so they hand the value to the UI thread
+/// (a channel) instead of touching view state.
+#[derive(Clone)]
+pub struct App {
+    inner: Arc<Inner>,
+}
+
+impl App {
+    /// `engine_for` returns the engine of one profile (each profile has its own socket).
+    pub fn new(
+        vm: Arc<dyn DynVm>,
+        os: HostOs,
+        engine_for: impl Fn(&ProfileName) -> PortResult<Arc<dyn DynEngine>> + Send + Sync + 'static,
+        spawner: Arc<dyn Spawner>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                profiles: ProfileService::new(SharedVm(vm), os),
+                engine_for: Box::new(engine_for),
+                spawner,
+            }),
+        }
+    }
+
+    fn run<T, F>(
+        &self,
+        work: impl FnOnce(Arc<Inner>) -> F + Send + 'static,
+        done: impl FnOnce(Result<T, AppError>) + Send + 'static,
+    ) -> Task
+    where
+        F: Future<Output = Result<T, AppError>> + Send,
+    {
+        let inner = self.inner.clone();
+        let (work, handle) = abortable(async move { done(work(inner).await) });
+        self.inner.spawner.spawn(Box::pin(async move {
+            // Err means the task was cancelled; there is nobody left to tell.
+            let _ = work.await;
+        }));
+        Task(handle)
+    }
+
+    /// True while an operation runs on `name`.
+    pub fn is_busy(&self, name: &ProfileName) -> bool {
+        self.inner.profiles.is_busy(name)
+    }
+
+    pub fn list_profiles(
+        &self,
+        done: impl FnOnce(Result<Vec<Profile>, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(|app| async move { app.profiles.list().await }, done)
+    }
+
+    pub fn create_profile(
+        &self,
+        spec: ProfileSpec,
+        mut progress: impl FnMut(ProgressEvent) + Send + 'static,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.profiles.create(&spec, &mut progress).await },
+            done,
+        )
+    }
+
+    pub fn run_profile(
+        &self,
+        name: ProfileName,
+        cmd: Lifecycle,
+        mut progress: impl FnMut(ProgressEvent) + Send + 'static,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            move |app| async move { app.profiles.run(&name, cmd, &mut progress).await },
+            done,
+        )
+    }
+
+    pub fn update_profile(
+        &self,
+        next: ProfileSpec,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(|app| async move { app.profiles.update(&next).await }, done)
+    }
+
+    /// Deletes only when `typed` equals the profile name.
+    pub fn delete_profile(
+        &self,
+        name: ProfileName,
+        typed: String,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.profiles.delete(&name, &typed).await },
+            done,
+        )
+    }
+
+    pub fn containers(
+        &self,
+        profile: ProfileName,
+        done: impl FnOnce(Result<Vec<Container>, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.containers().await },
+            done,
+        )
+    }
+
+    pub fn restart_container(
+        &self,
+        profile: ProfileName,
+        id: String,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.restart_container(&id).await },
+            done,
+        )
+    }
+
+    /// A running container is removed only with `force`.
+    pub fn remove_container(
+        &self,
+        profile: ProfileName,
+        id: String,
+        force: bool,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            move |app| async move { app.engine(&profile)?.remove_container(&id, force).await },
+            done,
+        )
+    }
+
+    /// Streams log lines to `line`. With `follow`, runs until the container stops or the
+    /// returned [`Task`] is cancelled.
+    pub fn logs(
+        &self,
+        profile: ProfileName,
+        id: String,
+        follow: bool,
+        mut line: impl FnMut(LogLine) + Send + 'static,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            move |app| async move { app.engine(&profile)?.logs(&id, follow, &mut line).await },
+            done,
+        )
+    }
+
+    pub fn images(
+        &self,
+        profile: ProfileName,
+        done: impl FnOnce(Result<Vec<Image>, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.images().await },
+            done,
+        )
+    }
+
+    pub fn image_prune_preview(
+        &self,
+        profile: ProfileName,
+        done: impl FnOnce(Result<Vec<Image>, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.image_prune_preview().await },
+            done,
+        )
+    }
+
+    pub fn prune_images(
+        &self,
+        profile: ProfileName,
+        done: impl FnOnce(Result<PruneReport, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.prune_images().await },
+            done,
+        )
+    }
+
+    pub fn volumes(
+        &self,
+        profile: ProfileName,
+        done: impl FnOnce(Result<Vec<Volume>, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.volumes().await },
+            done,
+        )
+    }
+
+    pub fn volume_prune_preview(
+        &self,
+        profile: ProfileName,
+        done: impl FnOnce(Result<Vec<Volume>, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.volume_prune_preview().await },
+            done,
+        )
+    }
+
+    /// Removes a volume that no container references.
+    pub fn remove_volume(
+        &self,
+        profile: ProfileName,
+        name: String,
+        done: impl FnOnce(Result<(), AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.remove_volume(&name).await },
+            done,
+        )
+    }
+
+    pub fn prune_volumes(
+        &self,
+        profile: ProfileName,
+        done: impl FnOnce(Result<PruneReport, AppError>) + Send + 'static,
+    ) -> Task {
+        self.run(
+            |app| async move { app.engine(&profile)?.prune_volumes().await },
+            done,
+        )
+    }
+}
 
 #[cfg(test)]
 mod tests {
