@@ -9,20 +9,26 @@ use telima_app::view::tray::TRAY_QUIT;
 actions!(telima, [Quit]);
 
 /// 이 OS의 종료 단축키(GPUI 키 표기).
-pub const QUIT_KEYS: &str = "";
+#[cfg(target_os = "macos")]
+pub const QUIT_KEYS: &str = "cmd-q";
+#[cfg(not(target_os = "macos"))]
+pub const QUIT_KEYS: &str = "ctrl-q";
 
 /// 앱 메뉴: 'telima' 메뉴 하나에 'telima 종료' 하나.
 pub fn app_menus() -> Vec<Menu> {
-    Vec::new()
+    vec![Menu {
+        name: telima_ui::APP_NAME.into(),
+        items: vec![MenuItem::action(TRAY_QUIT, Quit)],
+        disabled: false,
+    }]
 }
 
-/// 종료 동작·단축키·(macOS) 앱 메뉴를 등록한다.
+/// 종료 동작·단축키·앱 메뉴를 등록한다.
 pub fn install(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(QUIT_KEYS, Quit, None)]);
-    #[cfg(target_os = "macos")]
+    // macOS shows it as the app menu; Linux keeps it unused.
     cx.set_menus(app_menus());
-    let _ = (MenuItem::separator(), TRAY_QUIT);
 }
 
 #[cfg(test)]
