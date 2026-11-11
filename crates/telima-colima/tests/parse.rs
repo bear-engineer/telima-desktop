@@ -1,5 +1,9 @@
-use telima_colima::parse::{ParseError, parse_log_line, parse_ls, parse_version};
+use telima_colima::parse::{
+    ParseError, parse_log_line, parse_ls, parse_status, parse_version, parse_version_info,
+};
+use telima_core::profile::Runtime as CoreRuntime;
 use telima_core::profile::{ProfileStatus, ProgressLevel, Runtime};
+use telima_core::version::ColimaVersion;
 
 const LS_MIXED: &str = include_str!("fixtures/ls_mixed.jsonl");
 const LS_EMPTY: &str = include_str!("fixtures/ls_empty.txt");
@@ -98,8 +102,14 @@ fn log_plain_line_is_info_with_whole_text() {
 
 #[test]
 fn version_first_line_parses() {
-    assert_eq!(parse_version(VERSION).unwrap(), (0, 10, 3));
-    assert_eq!(parse_version("colima version 1.2.30").unwrap(), (1, 2, 30));
+    assert_eq!(
+        parse_version(VERSION).unwrap(),
+        ColimaVersion::new(0, 10, 3)
+    );
+    assert_eq!(
+        parse_version("colima version v1.2.30").unwrap(),
+        ColimaVersion::new(1, 2, 30)
+    );
 }
 
 #[test]
@@ -109,4 +119,57 @@ fn version_garbage_is_error() {
         Err(ParseError::Version(_))
     ));
     assert!(matches!(parse_version(""), Err(ParseError::Version(_))));
+}
+
+const VERSION_FULL: &str = include_str!("fixtures/colima_version_full.txt");
+const STATUS: &str = include_str!("fixtures/status_running.json");
+
+#[test]
+fn version_info_reads_colima_and_docker_versions() {
+    let v = parse_version_info(VERSION_FULL).unwrap();
+    assert_eq!(v.colima, ColimaVersion::new(0, 10, 3));
+    assert_eq!(v.docker_client.as_deref(), Some("v29.9.3"));
+    assert_eq!(v.docker_server.as_deref(), Some("v29.5.2"));
+}
+
+#[test]
+fn version_info_without_docker_lines_has_none() {
+    let v = parse_version_info(VERSION).unwrap();
+    assert_eq!(v.colima, ColimaVersion::new(0, 10, 3));
+    assert_eq!(v.docker_client, None);
+    assert_eq!(v.docker_server, None);
+}
+
+#[test]
+fn version_info_rejects_garbage() {
+    assert!(matches!(
+        parse_version_info("nope"),
+        Err(ParseError::Version(_))
+    ));
+}
+
+#[test]
+fn status_maps_real_fixture() {
+    let s = parse_status(STATUS).unwrap();
+    assert_eq!(s.runtime, CoreRuntime::Docker);
+    assert!(!s.kubernetes);
+    assert_eq!(s.address.as_deref(), Some("192.168.64.2"));
+    assert_eq!(s.cpus, 8);
+}
+
+#[test]
+fn status_kubernetes_true_and_missing_address() {
+    let s = parse_status(r#"{"runtime":"docker","kubernetes":true,"cpu":2,"memory":1,"disk":1}"#)
+        .unwrap();
+    assert!(s.kubernetes);
+    assert_eq!(s.address, None);
+}
+
+#[test]
+fn status_invalid_json_and_unknown_runtime() {
+    assert!(matches!(parse_status("{"), Err(ParseError::Json { .. })));
+    assert_eq!(
+        parse_status(r#"{"runtime":"podman"}"#).unwrap_err(),
+        ParseError::Runtime("podman".into())
+    );
 }

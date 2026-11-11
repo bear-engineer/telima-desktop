@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use telima_colima::cli::{ColimaCli, CommandOutput, CommandRunner, RunError, create_args};
+use telima_colima::cli::{
+    ColimaCli, CommandOutput, CommandRunner, RunError, create_args, lima_instance_name,
+};
 use telima_core::ports::{PortError, VmManager};
 use telima_core::profile::{
-    MountType, ProfileName, ProfileSpec, ProfileStatus, ProgressEvent, ProgressLevel, Runtime,
-    VmType,
+    DeleteOptions, Mount, MountType, ProfileName, ProfileSpec, ProfileStatus, ProgressEvent,
+    ProgressLevel, Runtime, VmType,
 };
 
 const BIN: &str = "/fake/colima";
@@ -91,6 +93,8 @@ fn spec(n: &str) -> ProfileSpec {
         runtime: Runtime::Docker,
         rosetta: false,
         network_address: false,
+        mounts: vec![],
+        kubernetes: false,
     }
 }
 
@@ -173,7 +177,7 @@ async fn lifecycle_argv() {
     c.start(&n, &mut |_| {}).await.unwrap();
     c.stop(&n, &mut |_| {}).await.unwrap();
     c.restart(&n, &mut |_| {}).await.unwrap();
-    c.delete(&n).await.unwrap();
+    c.delete(&n, DeleteOptions::default()).await.unwrap();
     let non_ls: Vec<Vec<String>> = fake.calls().into_iter().filter(|a| a[1] != "ls").collect();
     assert_eq!(
         non_ls,
@@ -210,7 +214,10 @@ async fn unknown_profile_is_not_found_without_running_command() {
         c.stop(&n, &mut |_| {}).await,
         Err(PortError::NotFound(_))
     ));
-    assert!(matches!(c.delete(&n).await, Err(PortError::NotFound(_))));
+    assert!(matches!(
+        c.delete(&n, DeleteOptions::default()).await,
+        Err(PortError::NotFound(_))
+    ));
     assert!(matches!(c.spec(&n).await, Err(PortError::NotFound(_))));
     assert!(fake.calls().iter().all(|a| a[1] == "ls"));
 }
@@ -306,4 +313,184 @@ async fn update_unknown_profile_is_not_found() {
         c.update(&spec("ghost")).await,
         Err(PortError::NotFound(_))
     ));
+}
+
+const LS_A_RUNNING: &str = r#"{"name":"alpha","status":"Running","arch":"aarch64","cpus":2,"memory":2147483648,"disk":10737418240,"runtime":"docker"}"#;
+const STATUS_JSON: &str = include_str!("fixtures/status_running.json");
+const VERSION_FULL: &str = include_str!("fixtures/colima_version_full.txt");
+
+fn running_fake() -> Fake {
+    Fake::new(|argv| match argv.get(1).map(String::as_str) {
+        Some("ls") => ok(LS_A_RUNNING),
+        Some("status") => ok(STATUS_JSON),
+        Some("version") => ok(VERSION_FULL),
+        _ => ok(""),
+    })
+}
+
+fn mount(path: &str, writable: bool) -> Mount {
+    Mount {
+        path: path.into(),
+        writable,
+    }
+}
+
+#[test]
+fn create_args_mounts_and_kubernetes() {
+    let mut s = spec("alpha");
+    s.mounts = vec![mount("/Users/example/src", true), mount("/data", false)];
+    s.kubernetes = true;
+    let a = create_args(&s);
+    assert!(
+        a.windows(2)
+            .any(|w| w == ["--mount", "/Users/example/src:w"])
+    );
+    assert!(a.windows(2).any(|w| w == ["--mount", "/data"]));
+    assert!(a.contains(&"--kubernetes".to_string()));
+}
+
+#[test]
+fn create_args_without_mounts_has_neither_flag() {
+    let a = create_args(&spec("alpha"));
+    assert!(!a.iter().any(|x| x == "--mount" || x == "--kubernetes"));
+}
+
+#[test]
+fn lima_instance_names() {
+    assert_eq!(lima_instance_name(&name("default")), "colima");
+    assert_eq!(lima_instance_name(&name("alpha")), "colima-alpha");
+}
+
+#[tokio::test]
+async fn delete_with_data_passes_flag() {
+    let fake = Fake::with_alpha();
+    let c = cli(&fake, tmp_home("deldata"));
+    c.delete(&name("alpha"), DeleteOptions { data: true })
+        .await
+        .unwrap();
+    let last = fake.calls().pop().unwrap();
+    assert_eq!(last, args(&[BIN, "delete", "-f", "--data", "alpha"]));
+}
+
+#[tokio::test]
+async fn version_runs_colima_version() {
+    let fake = running_fake();
+    let c = cli(&fake, tmp_home("ver"));
+    let v = c.colima_version().await.unwrap();
+    assert_eq!(v, telima_core::version::ColimaVersion::new(0, 10, 3));
+    assert_eq!(fake.calls(), vec![args(&[BIN, "version"])]);
+}
+
+#[tokio::test]
+async fn prune_runs_forced_prune_only() {
+    let fake = Fake::with_alpha();
+    let c = cli(&fake, tmp_home("prune"));
+    c.prune_cache().await.unwrap();
+    assert_eq!(fake.calls(), vec![args(&[BIN, "prune", "-f"])]);
+}
+
+#[tokio::test]
+async fn runtime_info_reads_versions_and_pid_file_time() {
+    let fake = running_fake();
+    let home = tmp_home("info");
+    let dir = home.join("_lima/colima-alpha");
+    std::fs::create_dir_all(&dir).unwrap();
+    let pid = std::fs::File::create(dir.join("ha.pid")).unwrap();
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    pid.set_modified(t).unwrap();
+    let info = cli(&fake, home).runtime_info(&name("alpha")).await.unwrap();
+    assert_eq!(
+        info.started_at,
+        Some(telima_core::time::UnixMillis(1_700_000_000_000))
+    );
+    assert_eq!(info.docker_server.as_deref(), Some("v29.5.2"));
+    assert_eq!(info.docker_client.as_deref(), Some("v29.9.3"));
+    assert_eq!(
+        info.colima,
+        Some(telima_core::version::ColimaVersion::new(0, 10, 3))
+    );
+    let calls = fake.calls();
+    assert!(calls.contains(&args(&[BIN, "status", "-p", "alpha", "--json"])));
+    assert!(calls.contains(&args(&[BIN, "version", "-p", "alpha"])));
+}
+
+#[tokio::test]
+async fn runtime_info_without_pid_file_has_no_start_time() {
+    let fake = running_fake();
+    let info = cli(&fake, tmp_home("nopid"))
+        .runtime_info(&name("alpha"))
+        .await
+        .unwrap();
+    assert_eq!(info.started_at, None);
+    assert!(info.colima.is_some());
+}
+
+#[tokio::test]
+async fn runtime_info_of_stopped_profile_is_empty_and_runs_nothing_else() {
+    let fake = Fake::with_alpha();
+    let info = cli(&fake, tmp_home("stopped"))
+        .runtime_info(&name("alpha"))
+        .await
+        .unwrap();
+    assert_eq!(info, telima_core::profile::RuntimeInfo::default());
+    assert!(fake.calls().iter().all(|a| a[1] == "ls"));
+}
+
+#[tokio::test]
+async fn runtime_info_unknown_profile_is_not_found() {
+    let fake = Fake::with_alpha();
+    let c = cli(&fake, tmp_home("infonf"));
+    assert!(matches!(
+        c.runtime_info(&name("ghost")).await,
+        Err(PortError::NotFound(_))
+    ));
+}
+
+const YAML_MK: &str = "cpu: 2\nkubernetes:\n  # Enable kubernetes.\n  enabled: false\n  version: v1\n\n# Mounts\nmounts:\n  - location: /old\n    writable: true\n\nvmType: vz\n";
+
+#[tokio::test]
+async fn spec_reads_mounts_and_kubernetes() {
+    let fake = Fake::with_alpha();
+    let home = tmp_home("specmk");
+    write_yaml(
+        &home,
+        "alpha",
+        &YAML_MK.replace("enabled: false", "enabled: true"),
+    );
+    let s = cli(&fake, home).spec(&name("alpha")).await.unwrap();
+    assert!(s.kubernetes);
+    assert_eq!(s.mounts, vec![mount("/old", true)]);
+}
+
+#[tokio::test]
+async fn update_writes_mounts_and_kubernetes_keeping_the_rest() {
+    let fake = Fake::with_alpha();
+    let home = tmp_home("updmk");
+    let path = write_yaml(&home, "alpha", YAML_MK);
+    let mut s = spec("alpha");
+    s.cpus = 2;
+    s.memory_gib = 2;
+    s.disk_gib = 10;
+    s.kubernetes = true;
+    s.mounts = vec![mount("/a", false), mount("/b", true)];
+    cli(&fake, home).update(&s).await.unwrap();
+    let got = std::fs::read_to_string(path).unwrap();
+    assert!(got.contains("  enabled: true\n  version: v1\n"), "{got}");
+    assert!(got.contains(
+        "mounts:\n  - location: /a\n    writable: false\n  - location: /b\n    writable: true\n\nvmType: vz\n"
+    ), "{got}");
+    assert!(got.contains("# Mounts\n"));
+    assert!(!got.contains("/old"));
+}
+
+#[tokio::test]
+async fn update_with_no_mounts_writes_empty_list() {
+    let fake = Fake::with_alpha();
+    let home = tmp_home("updempty");
+    let path = write_yaml(&home, "alpha", YAML_MK);
+    let mut s = spec("alpha");
+    s.cpus = 2;
+    cli(&fake, home).update(&s).await.unwrap();
+    let got = std::fs::read_to_string(path).unwrap();
+    assert!(got.contains("mounts: []\n\nvmType: vz\n"), "{got}");
 }

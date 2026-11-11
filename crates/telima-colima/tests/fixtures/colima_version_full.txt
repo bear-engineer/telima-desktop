@@ -1,0 +1,7 @@
+colima version 0.10.3
+git commit: 0000000000000000000000000000000000000000
+
+runtime: docker
+arch: aarch64
+client: v29.9.3
+server: v29.5.2
