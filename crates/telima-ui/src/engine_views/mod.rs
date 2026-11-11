@@ -6,9 +6,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gpui_kit::{Context, Task};
+use gpui_kit::{Context, FocusHandle, Task};
 use telima_app::AppError;
 use telima_app::runtime::{App as Telima, Task as Job};
+use telima_app::view::notice::{Notice, error_text, notice};
 use telima_app::view::{
     Confirm, ContainerRow, ImageRow, VolumeRow, confirm_prune_images, confirm_prune_volumes,
     confirm_remove_container, container_rows, image_rows, volume_rows,
@@ -18,6 +19,8 @@ use telima_core::profile::ProfileName;
 
 use crate::shell::Tab;
 
+mod copy;
+mod icons;
 mod model;
 mod render;
 
@@ -44,7 +47,12 @@ pub enum ListState<T> {
 /// What a confirmed dialog runs.
 #[derive(Debug, Clone, PartialEq)]
 enum Action {
-    RemoveContainer { id: String, force: bool },
+    RemoveContainer {
+        id: String,
+        force: bool,
+    },
+    /// Removes stopped containers one by one (never forced).
+    RemoveContainers(Vec<String>),
     PruneImages,
     PruneVolumes,
 }
@@ -63,7 +71,11 @@ pub struct Dialog {
 pub struct LogPanel {
     pub container: String,
     pub name: String,
+    /// Image and short id shown next to the name in the panel header.
+    pub image: String,
     pub follow: bool,
+    /// The 시각 switch: show the timestamp column.
+    pub show_time: bool,
     pub lines: Vec<LogLine>,
     pub error: Option<String>,
     stream: u64,
@@ -96,7 +108,13 @@ pub struct EnginePanel {
     volumes: ListState<VolumeRow>,
     dialog: Option<Dialog>,
     /// Last action error, shown above the list.
-    notice: Option<String>,
+    notice: Option<Notice>,
+    query: String,
+    filter: StatusFilter,
+    selected: Option<String>,
+    menu: Option<String>,
+    /// Keyboard focus of the toolbar filter field.
+    focus: FocusHandle,
     log: Option<LogPanel>,
     log_job: Option<Job>,
     streams: u64,
@@ -124,6 +142,11 @@ impl EnginePanel {
             volumes: ListState::Idle,
             dialog: None,
             notice: None,
+            query: String::new(),
+            filter: StatusFilter::All,
+            selected: None,
+            menu: None,
+            focus: cx.focus_handle(),
             log: None,
             log_job: None,
             streams: 0,
@@ -151,8 +174,16 @@ impl EnginePanel {
         self.log.as_ref()
     }
 
-    pub fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
+    pub fn notice(&self) -> Option<&Notice> {
+        self.notice.as_ref()
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn status_filter(&self) -> StatusFilter {
+        self.filter
     }
 
     pub fn tab(&self) -> Tab {
@@ -169,6 +200,8 @@ impl EnginePanel {
             self.volumes = ListState::Idle;
             self.dialog = None;
             self.notice = None;
+            self.selected = None;
+            self.menu = None;
             self.close_logs(cx);
         }
         self.tab = tab;
@@ -235,7 +268,7 @@ impl EnginePanel {
         fn list<T, R>(r: Result<Vec<T>, AppError>, rows: fn(&[T]) -> Vec<R>) -> ListState<R> {
             match r {
                 Ok(v) => ListState::Ready(rows(&v)),
-                Err(e) => ListState::Failed(e.to_string()),
+                Err(e) => ListState::Failed(error_text(&e)),
             }
         }
         match msg {
@@ -257,17 +290,17 @@ impl EnginePanel {
                 });
             }
             Msg::ImagePreview(Err(e)) | Msg::VolumePreview(Err(e)) => {
-                self.notice = Some(e.to_string());
+                self.notice = Some(notice(&e));
             }
             Msg::Done(tab, r) => {
                 if let Err(e) = r {
-                    self.notice = Some(e.to_string());
+                    self.notice = Some(notice(&e));
                 }
                 self.load(tab, cx);
             }
             Msg::Pruned(tab, r) => {
                 if let Err(e) = r {
-                    self.notice = Some(e.to_string());
+                    self.notice = Some(notice(&e));
                 }
                 self.load(tab, cx);
             }
@@ -282,7 +315,7 @@ impl EnginePanel {
             }
             Msg::LogEnd(stream, r) => {
                 if let Some(log) = self.log.as_mut().filter(|l| l.stream == stream) {
-                    log.error = r.err().map(|e| e.to_string());
+                    log.error = r.err().map(|e| error_text(&e));
                 }
             }
         }
@@ -290,40 +323,82 @@ impl EnginePanel {
 
     /// Container rows after the toolbar filter.
     pub fn visible_containers(&self) -> Vec<ContainerRow> {
-        unimplemented!()
+        match &self.containers {
+            ListState::Ready(rows) => filter_rows(rows, &self.query, self.filter)
+                .into_iter()
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Segment counts of the loaded containers.
+    pub fn filter_counts(&self) -> FilterCounts {
+        match &self.containers {
+            ListState::Ready(rows) => FilterCounts::of(rows),
+            _ => FilterCounts::default(),
+        }
     }
 
     pub fn set_status_filter(&mut self, filter: StatusFilter, cx: &mut Context<Self>) {
-        let _ = (filter, cx);
-        unimplemented!()
+        self.filter = filter;
+        cx.notify();
     }
 
     pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
-        let _ = (query, cx);
-        unimplemented!()
+        self.query = query;
+        cx.notify();
     }
 
     pub fn selected(&self) -> Option<&str> {
-        unimplemented!()
+        self.selected.as_deref()
     }
 
+    /// Selects a row; its icon actions stay visible without hover.
     pub fn select(&mut self, id: &str, cx: &mut Context<Self>) {
-        let _ = (id, cx);
-        unimplemented!()
+        self.selected = Some(id.to_owned());
+        cx.notify();
     }
 
+    /// Row whose ⋯ menu is open.
     pub fn menu(&self) -> Option<&str> {
-        unimplemented!()
+        self.menu.as_deref()
     }
 
     pub fn toggle_menu(&mut self, id: &str, cx: &mut Context<Self>) {
-        let _ = (id, cx);
-        unimplemented!()
+        self.menu = match self.menu.as_deref() {
+            Some(open) if open == id => None,
+            _ => Some(id.to_owned()),
+        };
+        self.selected = Some(id.to_owned());
+        cx.notify();
     }
 
+    pub fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.menu = None;
+        cx.notify();
+    }
+
+    /// Opens the confirm for removing every exited container ("종료된 N개 삭제").
     pub fn request_remove_exited(&mut self, cx: &mut Context<Self>) {
-        let _ = cx;
-        unimplemented!()
+        let ListState::Ready(rows) = &self.containers else {
+            return;
+        };
+        let ids = model::exited_ids(rows);
+        if ids.is_empty() {
+            return;
+        }
+        let items = rows
+            .iter()
+            .filter(|r| ids.contains(&r.id))
+            .map(|r| r.name.clone())
+            .collect();
+        self.dialog = Some(Dialog {
+            confirm: copy::confirm_remove_exited(ids.len()),
+            items,
+            action: Action::RemoveContainers(ids),
+        });
+        cx.notify();
     }
 
     fn container(&self, id: &str) -> Option<&ContainerRow> {
@@ -404,6 +479,15 @@ impl EnginePanel {
                     send(Msg::Done(Tab::Containers, r))
                 });
             }
+            Action::RemoveContainers(ids) => {
+                for id in ids {
+                    let send = send.clone();
+                    self.app
+                        .remove_container(profile.clone(), id, false, move |r| {
+                            send(Msg::Done(Tab::Containers, r))
+                        });
+                }
+            }
             Action::PruneImages => {
                 self.app
                     .prune_images(profile, move |r| send(Msg::Pruned(Tab::Images, r)));
@@ -423,10 +507,21 @@ impl EnginePanel {
 
     /// Opens the log viewer for a container, following new lines.
     pub fn open_logs(&mut self, id: &str, cx: &mut Context<Self>) {
-        let name = self
-            .container(id)
-            .map_or_else(|| id.to_owned(), |r| r.name.clone());
-        self.stream_logs(id.to_owned(), name, true, cx);
+        let (name, image) = self.container(id).map_or_else(
+            || (id.to_owned(), String::new()),
+            |r| (r.name.clone(), r.image.clone()),
+        );
+        self.menu = None;
+        self.selected = Some(id.to_owned());
+        self.stream_logs(id.to_owned(), name, image, true, cx);
+    }
+
+    /// The 시각 switch of the log panel.
+    pub fn set_show_time(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(log) = self.log.as_mut() {
+            log.show_time = on;
+        }
+        cx.notify();
     }
 
     /// Turns follow on or off; the stream restarts from the start of the log.
@@ -437,8 +532,8 @@ impl EnginePanel {
         if log.follow == follow {
             return;
         }
-        let (id, name) = (log.container.clone(), log.name.clone());
-        self.stream_logs(id, name, follow, cx);
+        let (id, name, image) = (log.container.clone(), log.name.clone(), log.image.clone());
+        self.stream_logs(id, name, image, follow, cx);
     }
 
     pub fn close_logs(&mut self, cx: &mut Context<Self>) {
@@ -449,7 +544,15 @@ impl EnginePanel {
         cx.notify();
     }
 
-    fn stream_logs(&mut self, id: String, name: String, follow: bool, cx: &mut Context<Self>) {
+    fn stream_logs(
+        &mut self,
+        id: String,
+        name: String,
+        image: String,
+        follow: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let show_time = self.log.as_ref().is_none_or(|l| l.show_time);
         self.close_logs(cx);
         let Some(profile) = self.profile.clone() else {
             return;
@@ -459,7 +562,9 @@ impl EnginePanel {
         self.log = Some(LogPanel {
             container: id.clone(),
             name,
+            image,
             follow,
+            show_time,
             lines: Vec::new(),
             error: None,
             stream,

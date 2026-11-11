@@ -5,6 +5,9 @@ use telima_core::container::ContainerState;
 
 use crate::components::status::Status;
 
+/// Prefix of `container_status_text` for a non-zero exit (telima-app view copy).
+const ERROR_PREFIX: &str = "오류";
+
 /// Status group of the containers toolbar (전체 / 실행 / 종료).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatusFilter {
@@ -22,12 +25,22 @@ impl StatusFilter {
     ];
 
     pub fn label(self) -> &'static str {
-        unimplemented!()
+        match self {
+            StatusFilter::All => "전체",
+            StatusFilter::Running => "실행",
+            StatusFilter::Exited => "종료",
+        }
     }
 
     pub fn matches(self, state: ContainerState) -> bool {
-        let _ = state;
-        unimplemented!()
+        match self {
+            StatusFilter::All => true,
+            StatusFilter::Running => matches!(
+                state,
+                ContainerState::Running | ContainerState::Paused | ContainerState::Restarting
+            ),
+            StatusFilter::Exited => matches!(state, ContainerState::Exited | ContainerState::Dead),
+        }
     }
 }
 
@@ -41,13 +54,20 @@ pub struct FilterCounts {
 
 impl FilterCounts {
     pub fn of(rows: &[ContainerRow]) -> Self {
-        let _ = rows;
-        unimplemented!()
+        let n = |f: StatusFilter| rows.iter().filter(|r| f.matches(r.state)).count();
+        Self {
+            all: rows.len(),
+            running: n(StatusFilter::Running),
+            exited: n(StatusFilter::Exited),
+        }
     }
 
     pub fn get(self, f: StatusFilter) -> usize {
-        let _ = f;
-        unimplemented!()
+        match f {
+            StatusFilter::All => self.all,
+            StatusFilter::Running => self.running,
+            StatusFilter::Exited => self.exited,
+        }
     }
 }
 
@@ -57,8 +77,15 @@ pub fn filter_rows<'a>(
     query: &str,
     filter: StatusFilter,
 ) -> Vec<&'a ContainerRow> {
-    let _ = (rows, query, filter);
-    unimplemented!()
+    let q = query.trim().to_lowercase();
+    rows.iter()
+        .filter(|r| filter.matches(r.state))
+        .filter(|r| {
+            q.is_empty()
+                || r.name.to_lowercase().contains(&q)
+                || r.image.to_lowercase().contains(&q)
+        })
+        .collect()
 }
 
 /// Lifecycle actions a container row offers in its state.
@@ -70,20 +97,41 @@ pub struct RowActions {
 }
 
 pub fn row_actions(state: ContainerState) -> RowActions {
-    let _ = state;
-    unimplemented!()
+    match state {
+        ContainerState::Running => RowActions {
+            start: false,
+            stop: true,
+            restart: true,
+        },
+        ContainerState::Paused | ContainerState::Restarting => RowActions {
+            stop: true,
+            ..RowActions::default()
+        },
+        ContainerState::Created | ContainerState::Exited => RowActions {
+            start: true,
+            ..RowActions::default()
+        },
+        _ => RowActions::default(),
+    }
 }
 
 /// Status shape of a container row. A non-zero exit is an error (triangle).
 pub fn container_status(row: &ContainerRow) -> Status {
-    let _ = row;
-    unimplemented!()
+    match row.state {
+        ContainerState::Running => Status::Running,
+        ContainerState::Restarting => Status::Busy,
+        ContainerState::Dead => Status::Error,
+        _ if row.status_text.starts_with(ERROR_PREFIX) => Status::Error,
+        _ => Status::Stopped,
+    }
 }
 
 /// Status shown by a volume usage chip. Unknown usage draws the idle chip.
 pub fn volume_chip(row: &VolumeRow) -> Status {
-    let _ = row;
-    unimplemented!()
+    match row.chip {
+        ChipKind::Ok => Status::Running,
+        ChipKind::Idle => Status::Stopped,
+    }
 }
 
 /// How a log line is colored. Only error-level lines are red, whatever the stream.
@@ -93,26 +141,78 @@ pub enum LineTone {
     Error,
 }
 
+/// Level words that mark a line as an error (postgres, logfmt, Go, nginx `[error]`).
+const ERROR_LEVELS: [&str; 6] = ["error", "fatal", "panic", "crit", "critical", "emerg"];
+
 pub fn line_tone(text: &str) -> LineTone {
-    let _ = text;
-    unimplemented!()
+    let logfmt = text
+        .split_whitespace()
+        .filter_map(|w| w.strip_prefix("level="))
+        .any(|l| ERROR_LEVELS.contains(&l.trim_matches('"').to_lowercase().as_str()));
+    let leading = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .take(6)
+        .any(|w| {
+            let upper = w.chars().all(|c| c.is_ascii_uppercase());
+            let bracketed = text.contains(&format!("[{w}]"));
+            (upper || bracketed) && ERROR_LEVELS.contains(&w.to_lowercase().as_str())
+        });
+    if logfmt || leading {
+        LineTone::Error
+    } else {
+        LineTone::Normal
+    }
 }
 
 /// Splits a leading Docker RFC 3339 timestamp (`2026-11-10T09:14:02.118123Z msg`) into
 /// `09:14:02.118` and the message. Lines without one are returned whole.
 pub fn split_timestamp(text: &str) -> (Option<String>, &str) {
-    (None, text)
+    let Some((stamp, rest)) = text.split_once(' ') else {
+        return (None, text);
+    };
+    let b = stamp.as_bytes();
+    let shaped = b.len() >= 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'T'
+        && b[13] == b':'
+        && b[16] == b':'
+        && stamp.ends_with('Z')
+        && [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18]
+            .iter()
+            .all(|&i| b[i].is_ascii_digit());
+    if !shaped {
+        return (None, text);
+    }
+    let frac: String = stamp[19..stamp.len() - 1]
+        .trim_start_matches('.')
+        .chars()
+        .chain(std::iter::repeat('0'))
+        .take(3)
+        .collect();
+    (Some(format!("{}.{frac}", &stamp[11..19])), rest)
 }
 
 /// `1204` -> `1,204`.
 pub fn group_thousands(n: usize) -> String {
-    n.to_string()
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Ids of the exited containers the "종료된 N개 삭제" button removes.
 pub fn exited_ids(rows: &[ContainerRow]) -> Vec<String> {
-    let _ = rows;
-    unimplemented!()
+    rows.iter()
+        .filter(|r| StatusFilter::Exited.matches(r.state))
+        .map(|r| r.id.clone())
+        .collect()
 }
 
 #[cfg(test)]

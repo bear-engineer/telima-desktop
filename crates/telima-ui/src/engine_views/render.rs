@@ -1,115 +1,105 @@
-//! Rendering of [`EnginePanel`]: 28px tables, list states, confirm dialog, Console log panel.
-//! Colors and sizes come only from `theme` through `style`.
+//! Rendering of [`EnginePanel`] after Containers.dc.html: toolbar (filter, status segments,
+//! bulk remove, refresh), 28px tables with hover/selection icon actions and a ⋯ menu, list
+//! states, confirm dialog and the Console log panel. Only theme tokens and shared components.
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use telima_app::view::{ContainerRow, ImageRow, VolumeRow};
-use telima_core::container::{ContainerState, LogStream};
+use telima_app::view::notice::NoticeKind;
+use telima_app::view::{ContainerRow, ImageRow, VolumeRow, short_image_id};
 
-use super::{Dialog, EnginePanel, ListState, LogPanel};
+use super::icons::{Icon, icon};
+use super::model::{
+    LineTone, StatusFilter, container_status, group_thousands, line_tone, row_actions,
+    split_timestamp, volume_chip,
+};
+use super::{Dialog, EnginePanel, ListState, LogPanel, copy};
+use crate::components::button::{ButtonVariant, button, icon_button};
+use crate::components::chip::status_chip;
+use crate::components::dialog::modal;
+use crate::components::segmented::segmented;
+use crate::components::skeleton::skeleton_row;
+use crate::components::status::{Status, status_shape};
+use crate::components::switch::switch;
 use crate::shell::Tab;
 use crate::style::{hsla, palette, space};
-use crate::theme::{Palette, font, metric};
+use crate::theme::{Palette, Rgb, font, metric, motion};
 
 /// Dialog items listed before "외 N개".
 const DIALOG_ITEMS: usize = 8;
+/// Skeleton bars of the loading state, as fractions of the row.
+const SKELETON: [f32; 4] = [0.9, 0.75, 0.6, 0.45];
+/// Group name for row hover reveal.
+const ROW_GROUP: &str = "engine-row";
 
-fn text(s: impl Into<SharedString>, color: crate::theme::Rgb) -> Div {
+fn text(s: impl Into<SharedString>, color: Rgb) -> Div {
     div()
         .text_size(px(font::BODY.size))
+        .line_height(px(font::BODY.line_height))
         .text_color(hsla(color))
         .child(s.into())
 }
 
-fn button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    danger: bool,
-    p: &Palette,
-) -> Stateful<Div> {
-    let (bg, fg, hover) = if danger {
-        (p.err, p.on_accent, p.err)
-    } else {
-        (p.bg_raised, p.text, p.bg_hover)
-    };
+fn small(s: impl Into<SharedString>, color: Rgb) -> Div {
     div()
-        .id(id.into())
-        .h(px(metric::ROW - 6.))
-        .px(space(1))
-        .flex()
-        .items_center()
-        .rounded(px(metric::RADIUS_SM))
-        .border_1()
-        .border_color(hsla(if danger { p.err_border } else { p.border }))
-        .bg(hsla(bg))
-        .text_color(hsla(fg))
         .text_size(px(font::SMALL.size))
-        .cursor_pointer()
-        .hover(move |s| s.bg(hsla(hover)))
-        .child(label.into())
+        .line_height(px(font::SMALL.line_height))
+        .text_color(hsla(color))
+        .child(s.into())
 }
 
-/// Running: filled dot. Stopped: hollow ring. In progress: arc. Dead: triangle.
-fn state_shape(state: ContainerState, p: &Palette) -> Div {
-    let size = px(8.);
-    let base = div().size(size).flex_none().rounded_full();
-    match state {
-        ContainerState::Running => base.bg(hsla(p.ok)),
-        ContainerState::Restarting => base
-            .border_1()
-            .border_color(hsla(p.track))
-            .border_t_1()
-            .border_r_1(),
-        ContainerState::Dead => div()
-            .flex_none()
-            .text_size(size)
-            .line_height(size)
-            .text_color(hsla(p.err))
-            .child("▲"),
-        _ => base.border_1().border_color(hsla(p.idle)),
-    }
+fn mono(s: impl Into<SharedString>, color: Rgb) -> Div {
+    div()
+        .font_family(font::MONO)
+        .text_size(px(font::CODE.size))
+        .line_height(px(font::CODE.line_height))
+        .text_color(hsla(color))
+        .child(s.into())
 }
 
-fn header(cols: &[(&'static str, f32)], p: &Palette) -> Div {
-    h_flex()
-        .h(px(metric::ROW))
-        .px(space(2))
-        .gap(space(2))
-        .border_b_1()
-        .border_color(hsla(p.border))
-        .text_size(px(font::SMALL.size))
-        .text_color(hsla(p.text_2))
-        .children(
-            cols.iter()
-                .map(|(label, w)| div().w(relative(*w)).child(*label)),
-        )
-}
-
-fn row(id: impl Into<ElementId>, p: &Palette) -> Stateful<Div> {
-    h_flex()
-        .id(id.into())
-        .h(px(metric::ROW))
-        .px(space(2))
-        .gap(space(2))
-        .border_b_1()
-        .border_color(hsla(p.border))
-        .hover(|s| s.bg(hsla(p.bg_hover)))
-}
-
+/// Ellipsis cell (CSS .ell): fixed share of the row, clips with "…" (M2).
 fn cell(w: f32) -> Div {
     div()
         .w(relative(w))
+        .min_w_0()
+        .flex_none()
         .overflow_hidden()
         .whitespace_nowrap()
         .text_ellipsis()
 }
 
-fn mono(s: impl Into<SharedString>, p: &Palette) -> Div {
-    div()
-        .font_family(font::MONO)
-        .text_size(px(font::CODE.size))
+fn header(cols: &[(&'static str, f32)], lead: bool, p: &Palette) -> Div {
+    h_flex()
+        .h(px(metric::ROW))
+        .px(space(1))
+        .gap(space(1))
+        .border_t_1()
+        .border_b_1()
+        .border_color(hsla(p.border))
+        .text_size(px(font::SMALL.size))
         .text_color(hsla(p.text_2))
-        .child(s.into())
+        .when(lead, |h| h.child(div().w(px(metric::ICON)).flex_none()))
+        .children(cols.iter().map(|(label, w)| cell(*w).child(*label)))
+}
+
+fn row(id: impl Into<ElementId>, selected: bool, p: &Palette) -> Stateful<Div> {
+    let hover = hsla(p.bg_hover);
+    h_flex()
+        .id(id.into())
+        .group(ROW_GROUP)
+        .h(px(metric::ROW))
+        .px(space(1))
+        .gap(space(1))
+        .border_b_1()
+        .border_color(hsla(p.border))
+        .when(selected, |r| r.bg(hsla(p.bg_selected)))
+        .when(!selected, |r| r.hover(move |s| s.bg(hover)))
+}
+
+/// 24px ghost icon button with an accessible label in its tooltip-less id.
+fn row_icon(id: impl Into<ElementId>, kind: Icon, p: &Palette) -> Stateful<Div> {
+    icon_button(id, icon(kind, hsla(p.text)), p)
+        .w(px(metric::BTN_SM))
+        .h(px(metric::BTN_SM))
 }
 
 fn centered(p: &Palette) -> Div {
@@ -122,8 +112,17 @@ fn centered(p: &Palette) -> Div {
         .text_color(hsla(p.text_2))
 }
 
+fn status_color(status: Status, p: &Palette) -> Rgb {
+    match status {
+        Status::Running => p.text,
+        Status::Stopped => p.text_2,
+        Status::Busy => p.busy,
+        Status::Error => p.err,
+    }
+}
+
 impl EnginePanel {
-    /// Shared loading / error / empty handling; `Some` means the list has rows to draw.
+    /// Shared loading / error / empty handling; `Ok` means the list has rows to draw.
     fn state_view<'a, T>(
         &self,
         state: &'a ListState<T>,
@@ -133,29 +132,22 @@ impl EnginePanel {
     ) -> Result<&'a [T], AnyElement> {
         match state {
             ListState::Idle => Err(centered(p)
-                .child(text("프로필을 선택하세요.", p.text_2))
+                .child(text(copy::NO_PROFILE, p.text_2))
                 .into_any_element()),
             ListState::Loading => Err(v_flex()
-                .children((0..4).map(|i| {
-                    h_flex().h(px(metric::ROW)).px(space(2)).child(
-                        div()
-                            .h(px(10.))
-                            .w(relative(0.9 - i as f32 * 0.15))
-                            .rounded(px(metric::RADIUS_SM))
-                            .bg(hsla(p.skeleton)),
-                    )
-                }))
+                .px(space(4))
+                .children(SKELETON.iter().map(|w| skeleton_row(&[*w], p)))
                 .into_any_element()),
             ListState::Failed(msg) => Err(centered(p)
                 .child(
                     h_flex()
                         .gap(space(1))
-                        .child(div().text_color(hsla(p.err)).child("▲"))
-                        .child(text("목록을 불러오지 못했습니다.", p.text)),
+                        .child(status_shape("list-failed", Status::Error, p))
+                        .child(text(copy::LOAD_FAILED, p.text)),
                 )
-                .child(mono(msg.clone(), p))
+                .child(text(msg.clone(), p.text_2))
                 .child(
-                    button("retry", "다시 시도", false, p)
+                    button("retry", copy::RETRY, ButtonVariant::Default, p)
                         .on_click(cx.listener(|v, _, _, cx| v.retry(cx))),
                 )
                 .into_any_element()),
@@ -166,206 +158,405 @@ impl EnginePanel {
         }
     }
 
-    fn containers_table(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let rows: Vec<ContainerRow> =
-            match self.state_view(&self.containers, "컨테이너가 없습니다.", p, cx) {
-                Ok(rows) => rows.to_vec(),
-                Err(el) => return el,
-            };
-        let body = rows.into_iter().map(|r| {
-            let (restart, remove, logs) = (r.id.clone(), r.id.clone(), r.id.clone());
-            row(SharedString::from(format!("ctr-{}", r.id)), p)
-                .child(
-                    cell(0.25).child(
-                        h_flex()
-                            .gap(space(1))
-                            .child(state_shape(r.state, p))
-                            .child(text(r.name.clone(), p.text)),
-                    ),
-                )
-                .child(cell(0.25).child(mono(r.image.clone(), p)))
-                .child(cell(0.15).child(text(r.state_label, p.text_2)))
-                .child(cell(0.2).child(text(r.status_text.clone(), p.text_2)))
-                .child(
-                    h_flex()
-                        .gap(space(0))
-                        .flex_none()
-                        .child(
-                            button(
-                                SharedString::from(format!("logs-{}", r.id)),
-                                "로그",
-                                false,
-                                p,
-                            )
+    fn row_menu(&self, r: &ContainerRow, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let actions = row_actions(r.state);
+        let item = |id: String, label: &'static str, danger: bool| {
+            let hover = hsla(p.bg_hover);
+            div()
+                .id(SharedString::from(id))
+                .h(px(metric::ROW))
+                .px(space(1))
+                .flex()
+                .items_center()
+                .rounded(px(metric::RADIUS_SM))
+                .text_size(px(font::BODY.size))
+                .text_color(hsla(if danger { p.err } else { p.text }))
+                .hover(move |s| s.bg(hover))
+                .child(label)
+        };
+        let (logs, restart, remove) = (r.id.clone(), r.id.clone(), r.id.clone());
+        deferred(
+            anchored().anchor(Anchor::TopRight).child(
+                v_flex()
+                    .id("row-menu")
+                    .occlude()
+                    .mt(px(metric::BTN_SM))
+                    .p(space(0))
+                    .rounded(px(metric::RADIUS_MD))
+                    .border_1()
+                    .border_color(hsla(p.border_strong))
+                    .bg(hsla(p.bg_raised))
+                    .shadow_lg()
+                    .on_mouse_down_out(cx.listener(|v, _, _, cx| v.close_menu(cx)))
+                    .child(
+                        item(format!("menu-logs-{}", r.id), copy::MENU_LOGS, false)
                             .on_click(cx.listener(move |v, _, _, cx| v.open_logs(&logs, cx))),
+                    )
+                    .when(actions.restart, |m| {
+                        m.child(
+                            item(format!("menu-restart-{}", r.id), copy::MENU_RESTART, false)
+                                .on_click(cx.listener(move |v, _, _, cx| {
+                                    v.close_menu(cx);
+                                    v.restart(&restart, cx)
+                                })),
                         )
-                        .child(
-                            button(
-                                SharedString::from(format!("restart-{}", r.id)),
-                                "재시작",
-                                false,
-                                p,
-                            )
-                            .on_click(cx.listener(move |v, _, _, cx| v.restart(&restart, cx))),
-                        )
-                        .child(
-                            button(
-                                SharedString::from(format!("remove-{}", r.id)),
-                                "삭제",
-                                false,
-                                p,
-                            )
-                            .on_click(
-                                cx.listener(move |v, _, _, cx| v.request_remove(&remove, cx)),
-                            ),
+                    })
+                    .child(
+                        item(format!("menu-remove-{}", r.id), copy::MENU_REMOVE, true).on_click(
+                            cx.listener(move |v, _, _, cx| {
+                                v.close_menu(cx);
+                                v.request_remove(&remove, cx)
+                            }),
                         ),
+                    ),
+            ),
+        )
+        .into_any_element()
+    }
+
+    /// Icon actions of a row: revealed on hover or when the row is selected (M3).
+    fn row_actions_view(
+        &self,
+        r: &ContainerRow,
+        selected: bool,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let actions = row_actions(r.state);
+        let (restart, more) = (r.id.clone(), r.id.clone());
+        let open = self.menu.as_deref() == Some(r.id.as_str());
+        h_flex()
+            .flex_1()
+            .justify_end()
+            .gap(space(0))
+            .when(!(selected || open), |a| {
+                a.invisible().group_hover(ROW_GROUP, |s| s.visible())
+            })
+            // Start/stop need ContainerEngine::start/stop, which the core port lacks; until
+            // then the state-valid lifecycle action shown inline is restart.
+            .when(actions.restart, |a| {
+                a.child(
+                    row_icon(
+                        SharedString::from(format!("restart-{}", r.id)),
+                        Icon::Restart,
+                        p,
+                    )
+                    .on_click(cx.listener(move |v, _, _, cx| v.restart(&restart, cx))),
                 )
+            })
+            .child(
+                div()
+                    .child(
+                        row_icon(SharedString::from(format!("more-{}", r.id)), Icon::More, p)
+                            .on_click(cx.listener(move |v, _, _, cx| v.toggle_menu(&more, cx))),
+                    )
+                    .when(open, |d| d.child(self.row_menu(r, p, cx))),
+            )
+    }
+
+    fn containers_table(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        if let Err(el) = self.state_view(&self.containers, copy::EMPTY_CONTAINERS, p, cx) {
+            return el;
+        }
+        let rows = self.visible_containers();
+        if rows.is_empty() {
+            return centered(p)
+                .child(text(copy::EMPTY_FILTERED, p.text_2))
+                .into_any_element();
+        }
+        let cols = copy::CONTAINER_COLS;
+        let body = rows.iter().map(|r| {
+            let selected = self.selected.as_deref() == Some(r.id.as_str());
+            let status = container_status(r);
+            let select = r.id.clone();
+            row(SharedString::from(format!("ctr-{}", r.id)), selected, p)
+                .on_click(cx.listener(move |v, _, _, cx| v.select(&select, cx)))
+                .child(
+                    div()
+                        .w(px(metric::ICON))
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .child(status_shape(
+                            SharedString::from(format!("ctr-shape-{}", r.id)),
+                            status,
+                            p,
+                        )),
+                )
+                .child(
+                    cell(cols[0].1)
+                        .text_size(px(font::BODY.size))
+                        .text_color(hsla(p.text))
+                        .when(selected, |c| c.font_weight(FontWeight::MEDIUM))
+                        .child(r.name.clone()),
+                )
+                .child(cell(cols[1].1).child(mono(short_image_id(&r.id), p.text_2)))
+                .child(cell(cols[2].1).child(mono(r.image.clone(), p.text)))
+                .child(
+                    cell(cols[3].1)
+                        .text_size(px(font::BODY.size))
+                        .text_color(hsla(status_color(status, p)))
+                        .when(status == Status::Error, |c| {
+                            c.font_weight(FontWeight::MEDIUM)
+                        })
+                        .child(r.status_text.clone()),
+                )
+                .child(cell(cols[4].1).child(text(copy::NONE, p.text_2)))
+                .child(cell(cols[5].1).child(text(copy::NONE, p.text_2)))
+                .child(self.row_actions_view(r, selected, p, cx))
         });
         v_flex()
-            .child(header(
-                &[
-                    ("이름", 0.25),
-                    ("이미지", 0.25),
-                    ("상태", 0.15),
-                    ("상태 설명", 0.2),
-                    ("", 0.15),
-                ],
-                p,
-            ))
+            .px(space(4))
+            .child(header(&cols, true, p))
             .children(body)
             .into_any_element()
     }
 
     fn images_table(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let rows: Vec<ImageRow> = match self.state_view(&self.images, "이미지가 없습니다.", p, cx)
-        {
+        let rows: Vec<ImageRow> = match self.state_view(&self.images, copy::EMPTY_IMAGES, p, cx) {
             Ok(rows) => rows.to_vec(),
             Err(el) => return el,
         };
+        let cols = copy::IMAGE_COLS;
         let body = rows.into_iter().map(|r| {
-            row(SharedString::from(format!("img-{}", r.id)), p)
-                .child(cell(0.4).child(text(
+            row(SharedString::from(format!("img-{}", r.id)), false, p)
+                .child(cell(cols[0].1).child(text(
                     r.tags.clone(),
                     if r.dangling { p.text_2 } else { p.text },
                 )))
-                .child(cell(0.3).child(mono(r.id.chars().take(12).collect::<String>(), p)))
-                .child(cell(0.15).child(mono(r.size.clone(), p)))
-                .child(cell(0.15).child(text(r.containers.clone(), p.text_2)))
+                .child(cell(cols[1].1).child(mono(r.short_id.clone(), p.text_2)))
+                .child(cell(cols[2].1).child(mono(r.size.clone(), p.text_2)))
+                .child(cell(cols[3].1).child(text(r.containers.clone(), p.text_2)))
         });
         v_flex()
-            .child(header(
-                &[
-                    ("태그", 0.4),
-                    ("ID", 0.3),
-                    ("크기", 0.15),
-                    ("컨테이너", 0.15),
-                ],
-                p,
-            ))
+            .px(space(4))
+            .child(header(&cols, false, p))
             .children(body)
             .into_any_element()
     }
 
     fn volumes_table(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let rows: Vec<VolumeRow> = match self.state_view(&self.volumes, "볼륨이 없습니다.", p, cx)
+        let rows: Vec<VolumeRow> = match self.state_view(&self.volumes, copy::EMPTY_VOLUMES, p, cx)
         {
             Ok(rows) => rows.to_vec(),
             Err(el) => return el,
         };
+        let cols = copy::VOLUME_COLS;
         let body = rows.into_iter().map(|r| {
-            let (fg, bg) = if r.in_use {
-                (p.ok, p.ok_bg)
-            } else {
-                (p.idle, p.idle_bg)
-            };
-            row(SharedString::from(format!("vol-{}", r.name)), p)
-                .child(cell(0.55).child(text(r.name.clone(), p.text)))
-                .child(cell(0.2).child(mono(r.size.clone(), p)))
-                .child(
-                    cell(0.25).child(
-                        div()
-                            .px(space(1))
-                            .rounded(px(metric::RADIUS_SM))
-                            .bg(hsla(bg))
-                            .text_size(px(font::SMALL.size))
-                            .text_color(hsla(fg))
-                            .child(r.in_use_label),
-                    ),
-                )
+            row(SharedString::from(format!("vol-{}", r.name)), false, p)
+                .child(cell(cols[0].1).child(text(r.name.clone(), p.text)))
+                .child(cell(cols[1].1).child(mono(r.size.clone(), p.text_2)))
+                // The chip hugs its label (M6): a flex row that does not stretch it.
+                .child(cell(cols[2].1).flex().child(status_chip(
+                    SharedString::from(format!("vol-chip-{}", r.name)),
+                    volume_chip(&r),
+                    r.in_use_label,
+                    p,
+                )))
         });
         v_flex()
-            .child(header(&[("이름", 0.55), ("크기", 0.2), ("사용", 0.25)], p))
+            .px(space(4))
+            .child(header(&cols, false, p))
             .children(body)
             .into_any_element()
     }
 
-    fn toolbar(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
-        let bar = h_flex()
-            .h(px(metric::ROW + 8.))
-            .px(space(2))
+    fn filter_field(&self, window: &Window, p: &Palette, cx: &mut Context<Self>) -> Stateful<Div> {
+        let focused = self.focus.is_focused(window);
+        let (value, color) = if self.query.is_empty() {
+            (copy::FILTER_PLACEHOLDER.to_owned(), p.text_disabled)
+        } else {
+            (self.query.clone(), p.text)
+        };
+        div()
+            .id("container-filter")
+            .track_focus(&self.focus)
+            .w(px(metric::FIELD_SELECT))
+            .h(px(metric::BTN))
+            .px(space(1))
             .gap(space(1))
-            .justify_end()
+            .flex()
+            .items_center()
+            .rounded(px(metric::RADIUS_MD))
+            .border_1()
+            .border_color(hsla(if focused { p.focus } else { p.border_strong }))
+            .bg(hsla(p.bg_raised))
+            .child(icon(Icon::Filter, hsla(p.text_2)))
             .child(
-                button("refresh", "새로고침", false, p)
-                    .on_click(cx.listener(|v, _, _, cx| v.retry(cx))),
-            );
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(font::BODY.size))
+                    .text_color(hsla(color))
+                    .child(value),
+            )
+            .on_click(cx.listener(|v, _, window, cx| window.focus(&v.focus, cx)))
+            .on_key_down(cx.listener(|v, ev: &KeyDownEvent, _, cx| {
+                let mut q = v.query.clone();
+                if edit_query(&mut q, ev) {
+                    v.set_query(q, cx);
+                }
+            }))
+    }
+
+    fn toolbar(&self, window: &Window, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let bar = h_flex().flex_none().px(space(4)).py(space(1)).gap(space(1));
+        let refresh = icon_button("refresh", icon(Icon::Refresh, hsla(p.text_2)), p)
+            .on_click(cx.listener(|v, _, _, cx| v.retry(cx)));
         match self.tab {
-            Tab::Containers => bar,
-            Tab::Images => bar.child(
-                button("prune-images", "미사용 이미지 정리", false, p)
+            Tab::Containers => {
+                let counts = self.filter_counts();
+                let options = StatusFilter::ALL
+                    .iter()
+                    .map(|f| SharedString::from(format!("{} {}", f.label(), counts.get(*f))))
+                    .collect();
+                let selected = StatusFilter::ALL
+                    .iter()
+                    .position(|f| *f == self.filter)
+                    .unwrap_or(0);
+                let entity = cx.entity().downgrade();
+                bar.child(self.filter_field(window, p, cx))
+                    .child(segmented(
+                        "status-filter",
+                        options,
+                        selected,
+                        p,
+                        move |i, _, cx| {
+                            if let Some(view) = entity.upgrade() {
+                                view.update(cx, |v, cx| {
+                                    v.set_status_filter(StatusFilter::ALL[i], cx)
+                                });
+                            }
+                        },
+                    ))
+                    .child(div().flex_1())
+                    .when(counts.exited > 0, |b| {
+                        b.child(
+                            button(
+                                "remove-exited",
+                                copy::remove_exited(counts.exited),
+                                ButtonVariant::Default,
+                                p,
+                            )
+                            .child(icon(Icon::Trash, hsla(p.text_2)))
+                            .on_click(cx.listener(|v, _, _, cx| v.request_remove_exited(cx))),
+                        )
+                    })
+                    .child(refresh)
+            }
+            Tab::Images => bar
+                .child(div().flex_1())
+                .child(
+                    button(
+                        "prune-images",
+                        copy::PRUNE_IMAGES,
+                        ButtonVariant::Default,
+                        p,
+                    )
                     .on_click(cx.listener(|v, _, _, cx| v.request_image_prune(cx))),
-            ),
-            Tab::Volumes => bar.child(
-                button("prune-volumes", "미사용 볼륨 정리", false, p)
+                )
+                .child(refresh),
+            Tab::Volumes => bar
+                .child(div().flex_1())
+                .child(
+                    button(
+                        "prune-volumes",
+                        copy::PRUNE_VOLUMES,
+                        ButtonVariant::Default,
+                        p,
+                    )
                     .on_click(cx.listener(|v, _, _, cx| v.request_volume_prune(cx))),
-            ),
+                )
+                .child(refresh),
         }
     }
 
-    fn log_panel(&self, log: &LogPanel, p: &Palette, cx: &mut Context<Self>) -> Div {
-        let follow = log.follow;
+    fn log_panel(&self, log: &LogPanel, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let (follow, show_time) = (log.follow, log.show_time);
         let lines = log.lines.iter().map(|l| {
-            let color = match l.stream {
-                LogStream::Stdout => p.text,
-                LogStream::Stderr => p.err,
+            let (ts, msg) = split_timestamp(&l.text);
+            let color = match line_tone(msg) {
+                LineTone::Error => p.err,
+                LineTone::Normal => p.text,
             };
-            div()
+            h_flex()
+                .gap(space(2))
                 .font_family(font::MONO)
                 .text_size(px(font::CODE.size))
                 .line_height(px(font::CODE.line_height))
-                .text_color(hsla(color))
-                .child(l.text.clone())
+                .when(show_time, |r| {
+                    r.child(
+                        div()
+                            .flex_none()
+                            .text_color(hsla(p.text_2))
+                            .child(ts.unwrap_or_default()),
+                    )
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(hsla(color))
+                        .child(msg.to_owned()),
+                )
         });
+        let entity = cx.entity().downgrade();
+        let entity2 = entity.clone();
+        let meta = if log.image.is_empty() {
+            short_image_id(&log.container)
+        } else {
+            format!("{} · {}", log.image, short_image_id(&log.container))
+        };
         v_flex()
-            .h(px(240.))
+            .h(px(metric::LOG_PANEL_H))
             .flex_none()
             .border_t_1()
-            .border_color(hsla(p.border))
-            .bg(hsla(p.bg_sunken))
+            .border_color(hsla(p.border_strong))
+            .bg(hsla(p.bg))
             .child(
                 h_flex()
-                    .h(px(metric::ROW))
-                    .px(space(2))
+                    .h(px(metric::TAB_H))
+                    .flex_none()
+                    .pl(space(4))
+                    .pr(space(2))
                     .gap(space(1))
-                    .border_b_1()
-                    .border_color(hsla(p.border))
-                    .child(text(format!("{} 로그", log.name), p.text).flex_1())
+                    .child(icon(Icon::Terminal, hsla(p.text_2)))
                     .child(
-                        button(
-                            "log-follow",
-                            if follow {
-                                "따라가기 켬"
-                            } else {
-                                "따라가기 끔"
-                            },
-                            false,
-                            p,
-                        )
-                        .when(follow, |b| b.bg(hsla(p.bg_selected)))
-                        .on_click(cx.listener(move |v, _, _, cx| v.set_follow(!follow, cx))),
+                        div()
+                            .text_size(px(font::BODY.size))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(hsla(p.text))
+                            .child(log.name.clone()),
+                    )
+                    .child(mono(meta, p.text_2))
+                    .child(div().flex_1())
+                    .child(
+                        h_flex()
+                            .gap(space(0))
+                            .child(switch("log-time", show_time, p, move |on, _, cx| {
+                                if let Some(view) = entity.upgrade() {
+                                    view.update(cx, |v, cx| v.set_show_time(on, cx));
+                                }
+                            }))
+                            .child(small(copy::LOG_TIME, p.text)),
                     )
                     .child(
-                        button("log-close", "닫기", false, p)
+                        h_flex()
+                            .gap(space(0))
+                            .child(switch("log-follow", follow, p, move |on, _, cx| {
+                                if let Some(view) = entity2.upgrade() {
+                                    view.update(cx, |v, cx| v.set_follow(on, cx));
+                                }
+                            }))
+                            .child(small(copy::LOG_FOLLOW, p.text).font_weight(FontWeight::MEDIUM)),
+                    )
+                    .child(
+                        icon_button("log-close", icon(Icon::Close, hsla(p.text_2)), p)
                             .on_click(cx.listener(|v, _, _, cx| v.close_logs(cx))),
                     ),
             )
@@ -373,79 +564,154 @@ impl EnginePanel {
                 v_flex()
                     .id("log-lines")
                     .flex_1()
-                    .px(space(2))
-                    .py(space(1))
+                    .min_h_0()
+                    .px(space(1))
+                    .py(space(0))
+                    .border_t_1()
+                    .border_color(hsla(p.border))
+                    .bg(hsla(p.bg_sunken))
                     .overflow_y_scroll()
                     .when(log.lines.is_empty() && log.error.is_none(), |d| {
-                        d.child(text("로그가 없습니다.", p.text_2))
+                        d.child(text(copy::LOG_EMPTY, p.text_2))
                     })
                     .children(lines)
-                    .when_some(log.error.clone(), |d, e| {
-                        d.child(mono(e, p).text_color(hsla(p.err)))
-                    }),
+                    .when_some(log.error.clone(), |d, e| d.child(text(e, p.err))),
             )
+            .child(
+                h_flex()
+                    .h(px(metric::ROW))
+                    .flex_none()
+                    .px(space(4))
+                    .gap(space(2))
+                    .border_t_1()
+                    .border_color(hsla(p.border))
+                    .bg(hsla(p.bg_chrome))
+                    .child(
+                        h_flex()
+                            .gap(space(0))
+                            .when(follow, |f| f.child(icon(Icon::Follow, hsla(p.text_2))))
+                            .child(small(
+                                if follow {
+                                    copy::LOG_FOLLOWING
+                                } else {
+                                    copy::LOG_PAUSED
+                                },
+                                p.text_2,
+                            )),
+                    )
+                    .child(div().flex_1())
+                    .child(mono(
+                        copy::line_count(&group_thousands(log.lines.len())),
+                        p.text_2,
+                    )),
+            )
+            .with_animation(
+                SharedString::from(format!("log-open-{}", log.container)),
+                Animation::new(motion::BASE).with_easing(motion::ease_out),
+                |el, t| el.opacity(t),
+            )
+            .into_any_element()
     }
 
-    fn dialog_view(&self, d: &Dialog, p: &Palette, cx: &mut Context<Self>) -> Div {
+    fn dialog_view(&self, d: &Dialog, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let more = d.items.len().saturating_sub(DIALOG_ITEMS);
         let items = d
             .items
             .iter()
             .take(DIALOG_ITEMS)
-            .map(|i| mono(i.clone(), p));
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(hsla(p.bg_chrome).opacity(0.6))
+            .map(|i| mono(i.clone(), p.text_2));
+        let content = v_flex()
+            .id("dialog")
+            .occlude()
+            .gap(space(2))
             .child(
-                v_flex()
-                    .id("dialog")
-                    .occlude()
-                    .w(px(360.))
-                    .p(space(4))
-                    .gap(space(2))
-                    .rounded(px(metric::RADIUS_LG))
-                    .border_1()
-                    .border_color(hsla(p.border_strong))
-                    .bg(hsla(p.bg_raised))
-                    .child(
-                        div()
-                            .text_size(px(font::TITLE.size))
-                            .text_color(hsla(p.text))
-                            .child(d.confirm.title.clone()),
-                    )
-                    .child(text(d.confirm.body.clone(), p.text_2))
-                    .when(!d.items.is_empty(), |c| {
-                        c.child(
-                            v_flex()
-                                .p(space(1))
-                                .rounded(px(metric::RADIUS_SM))
-                                .bg(hsla(p.bg_sunken))
-                                .children(items)
-                                .when(more > 0, |l| {
-                                    l.child(text(format!("외 {more}개"), p.text_2))
-                                }),
-                        )
-                    })
-                    .child(
-                        h_flex()
-                            .gap(space(1))
-                            .justify_end()
-                            .child(
-                                button("dialog-cancel", "취소", false, p)
-                                    .on_click(cx.listener(|v, _, _, cx| v.dismiss(cx))),
-                            )
-                            .when(d.confirm.can_confirm, |b| {
-                                b.child(
-                                    button("dialog-ok", d.confirm.confirm_label.clone(), true, p)
-                                        .on_click(cx.listener(|v, _, _, cx| v.accept(cx))),
-                                )
-                            }),
-                    ),
+                div()
+                    .text_size(px(font::TITLE.size))
+                    .line_height(px(font::TITLE.line_height))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(hsla(p.text))
+                    .child(d.confirm.title.clone()),
             )
+            .child(text(d.confirm.body.clone(), p.text_2))
+            .when(!d.items.is_empty(), |c| {
+                c.child(
+                    v_flex()
+                        .p(space(1))
+                        .rounded(px(metric::RADIUS_SM))
+                        .bg(hsla(p.bg_sunken))
+                        .children(items)
+                        .when(more > 0, |l| {
+                            l.child(text(copy::more_items(more), p.text_2))
+                        }),
+                )
+            })
+            .child(
+                h_flex()
+                    .gap(space(1))
+                    .justify_end()
+                    .child(
+                        button("dialog-cancel", copy::CANCEL, ButtonVariant::Default, p)
+                            .on_click(cx.listener(|v, _, _, cx| v.dismiss(cx))),
+                    )
+                    .when(d.confirm.can_confirm, |b| {
+                        b.child(
+                            button(
+                                "dialog-ok",
+                                d.confirm.confirm_label.clone(),
+                                ButtonVariant::Danger,
+                                p,
+                            )
+                            .on_click(cx.listener(|v, _, _, cx| v.accept(cx))),
+                        )
+                    }),
+            );
+        modal("engine-dialog", metric::DIALOG_W_SM, p, content).into_any_element()
+    }
+
+    fn notice_view(&self, p: &Palette) -> Option<Div> {
+        let n = self.notice.as_ref()?;
+        let tone = if n.kind == NoticeKind::Busy {
+            (p.busy, p.busy_bg)
+        } else {
+            (p.err, p.err_bg)
+        };
+        Some(
+            h_flex()
+                .mx(space(4))
+                .px(space(2))
+                .py(space(1))
+                .gap(space(1))
+                .rounded(px(metric::RADIUS_MD))
+                .border_1()
+                .border_color(hsla(p.err_border))
+                .bg(hsla(tone.1))
+                .child(status_shape("notice-shape", Status::Error, p))
+                .child(text(n.message.clone(), p.text))
+                .when_some(n.hint, |d, h| d.child(mono(h, tone.0))),
+        )
+    }
+}
+
+/// Typing into the filter field: printable characters and backspace.
+fn edit_query(value: &mut String, ev: &KeyDownEvent) -> bool {
+    let k = &ev.keystroke;
+    if k.modifiers.platform || k.modifiers.control {
+        return false;
+    }
+    match k.key.as_str() {
+        "backspace" => value.pop().is_some(),
+        "escape" => {
+            let had = !value.is_empty();
+            value.clear();
+            had
+        }
+        _ => match &k.key_char {
+            Some(ch) if !ch.chars().any(char::is_control) => {
+                value.push_str(ch);
+                true
+            }
+            _ => false,
+        },
     }
 }
 
@@ -463,24 +729,13 @@ impl Render for EnginePanel {
             .relative()
             .size_full()
             .bg(hsla(p.bg))
-            .child(self.toolbar(p, cx))
-            .when_some(self.notice.clone(), |d, n| {
-                d.child(
-                    div()
-                        .mx(space(2))
-                        .px(space(2))
-                        .py(space(1))
-                        .rounded(px(metric::RADIUS_SM))
-                        .border_1()
-                        .border_color(hsla(p.err_border))
-                        .bg(hsla(p.err_bg))
-                        .child(text(n, p.err)),
-                )
-            })
+            .child(self.toolbar(window, p, cx))
+            .when_some(self.notice_view(p), |d, n| d.child(n))
             .child(
                 div()
                     .id("engine-table")
                     .flex_1()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .child(table),
             )
