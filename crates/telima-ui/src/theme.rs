@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(FIELD_SEARCH, 160.0);
         assert_eq!((COL_ID, ID_COL_BREAKPOINT), (88.0, 720.0));
         // The main pane (window minus sidebar and inspector) is below the ID breakpoint.
-        assert!(WINDOW_W - SIDEBAR - INSPECTOR < ID_COL_BREAKPOINT);
+        const { assert!(WINDOW_W - SIDEBAR - INSPECTOR < ID_COL_BREAKPOINT) };
         assert_eq!((DOT, SKELETON_H, BAR_H, FOCUS_RING), (8.0, 10.0, 4.0, 2.0));
         assert_eq!((SWITCH_W, SWITCH_H, SWITCH_KNOB), (28.0, 16.0, 12.0));
         assert_eq!((WINDOW_W, WINDOW_H), (1080.0, 720.0));

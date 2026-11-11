@@ -126,10 +126,20 @@ pub struct EnginePanel {
     log: Option<LogPanel>,
     log_job: Option<Job>,
     streams: u64,
+    /// Last measured panel width (px); picks the containers table columns.
+    width: f32,
     _poll: Task<()>,
 }
 
 impl EnginePanel {
+    /// Records the measured panel width; re-renders only when the table columns change.
+    pub(super) fn set_width(&mut self, w: f32, cx: &mut Context<Self>) {
+        if model::container_columns(w) != model::container_columns(self.width) {
+            cx.notify();
+        }
+        self.width = w;
+    }
+
     pub fn new(app: Telima, cx: &mut Context<Self>) -> Self {
         let poll = cx.spawn(async move |this, cx| {
             loop {
@@ -161,6 +171,9 @@ impl EnginePanel {
             log: None,
             log_job: None,
             streams: 0,
+            width: crate::theme::metric::WINDOW_W
+                - crate::theme::metric::SIDEBAR
+                - crate::theme::metric::INSPECTOR,
             _poll: poll,
         }
     }

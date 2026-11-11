@@ -8,8 +8,13 @@ use telima_core::container::{ContainerState, LogLine};
 use crate::components::status::Status;
 
 /// Columns of `copy::CONTAINER_COLS` shown at an engine panel width (px), by index.
-pub fn container_columns(_panel_w: f32) -> Vec<usize> {
-    (0..crate::engine_views::copy::CONTAINER_COLS.len()).collect()
+/// Below `metric::ID_COL_BREAKPOINT` the ID column is left out (its 이름 cell tooltip has it).
+pub fn container_columns(panel_w: f32) -> Vec<usize> {
+    use crate::engine_views::copy::{CONTAINER_COLS, CONTAINER_ID_COL};
+    let show_id = panel_w >= crate::theme::metric::ID_COL_BREAKPOINT;
+    (0..CONTAINER_COLS.len())
+        .filter(|&i| show_id || i != CONTAINER_ID_COL)
+        .collect()
 }
 
 /// Prefix of `container_status_text` for a non-zero exit (telima-app view copy).

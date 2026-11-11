@@ -420,9 +420,6 @@ fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
             v.select("c1", cx);
         });
         cx.run_until_parked();
-        // The panel re-lays out once it has measured its new width.
-        cx.update(|window, _| window.refresh());
-        cx.run_until_parked();
         let row = cx.debug_bounds("ctr-row-c1").expect("row rendered");
         let actions = cx.debug_bounds("ctr-actions-c1").expect("actions rendered");
         let head = cx

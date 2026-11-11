@@ -58,15 +58,18 @@ pub fn confirm_remove_exited(n: usize) -> Confirm {
 /// Column headers of the containers table: (label, share of the row width). Shares sum to
 /// 1.0 so the cells fill the row up to the actions slot (N7); 상태 keeps room for
 /// "실행 중 · 2시간" (Containers.dc.html, M4) and 포트 for "9999→9999/tcp" at the main pane
-/// width (F7, width taken from 이름/ID/이미지).
+/// width (F7). ID has share 0: it is fixed at `metric::COL_ID` (a full 12-char short ID) and
+/// hidden below `metric::ID_COL_BREAKPOINT`, so the shares of the others sum to 1.0.
 pub const CONTAINER_COLS: [(&str, f32); 6] = [
-    ("이름", 0.15),
-    ("ID", 0.1),
-    ("이미지", 0.16),
-    ("상태", 0.22),
-    ("포트", 0.24),
-    ("시작", 0.13),
+    ("이름", 0.17),
+    ("ID", 0.0),
+    ("이미지", 0.18),
+    ("상태", 0.24),
+    ("포트", 0.27),
+    ("시작", 0.14),
 ];
+/// Index of the ID column in [`CONTAINER_COLS`].
+pub const CONTAINER_ID_COL: usize = 1;
 pub const IMAGE_COLS: [(&str, f32); 4] = [
     ("태그", 0.4),
     ("ID", 0.3),

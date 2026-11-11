@@ -9,7 +9,8 @@ use telima_app::view::{ContainerRow, ImageRow, VolumeRow, short_image_id};
 
 use super::icons::{Icon, icon};
 use super::model::{
-    LineTone, StatusFilter, container_status, log_count_text, port_cell, row_actions, volume_chip,
+    LineTone, StatusFilter, container_columns, container_status, log_count_text, port_cell,
+    row_actions, volume_chip,
 };
 use super::{Dialog, EnginePanel, ListState, LogPanel, copy};
 use crate::components::button::{ButtonVariant, button, icon_button};
@@ -68,10 +69,25 @@ fn cell(share: f32) -> Div {
         .text_ellipsis()
 }
 
-/// Table header; `actions` reserves the row actions slot so columns line up with the rows.
+/// A column cell: share 0 is the fixed short-ID width, any other share grows like [`cell`].
+fn sized(share: f32) -> Div {
+    if share > 0. {
+        cell(share)
+    } else {
+        cell(0.).flex_none().w(px(metric::COL_ID))
+    }
+}
+
+/// Indices of every column, for tables that never hide one.
+fn all_cols(cols: &[(&str, f32)]) -> Vec<usize> {
+    (0..cols.len()).collect()
+}
+
+/// Table header over the `shown` columns (indices keep their selectors stable); `actions` reserves the row actions slot so columns line up with the rows.
 fn header(
     key: &'static str,
     cols: &[(&'static str, f32)],
+    shown: &[usize],
     lead: bool,
     actions: bool,
     p: &Palette,
@@ -86,10 +102,10 @@ fn header(
         .text_size(px(font::SMALL.size))
         .text_color(hsla(p.text_2))
         .when(lead, |h| h.child(div().w(px(metric::ICON)).flex_none()))
-        .children(cols.iter().enumerate().map(|(i, (label, w))| {
-            cell(*w)
+        .children(shown.iter().map(|&i| {
+            sized(cols[i].1)
                 .debug_selector(move || format!("{key}-header-{i}"))
-                .child(*label)
+                .child(cols[i].0)
         }))
         .when(actions, |h| {
             h.child(actions_slot().debug_selector(move || format!("{key}-header-actions")))
@@ -322,6 +338,8 @@ impl EnginePanel {
                 .into_any_element();
         }
         let cols = copy::CONTAINER_COLS;
+        let shown = container_columns(self.width);
+        let show_id = shown.contains(&copy::CONTAINER_ID_COL);
         let body = rows.iter().map(|r| {
             let selected = self.selected.as_deref() == Some(r.id.as_str());
             let status = container_status(r);
@@ -329,7 +347,7 @@ impl EnginePanel {
             let (key, id) = (r.id.clone(), r.id.clone());
             let col = move |i: usize| {
                 let id = id.clone();
-                cell(cols[i].1).debug_selector(move || format!("ctr-cell-{id}-{i}"))
+                sized(cols[i].1).debug_selector(move || format!("ctr-cell-{id}-{i}"))
             };
             row(SharedString::from(format!("ctr-{}", r.id)), selected, p)
                 .debug_selector(move || format!("ctr-row-{key}"))
@@ -351,9 +369,27 @@ impl EnginePanel {
                         .text_size(px(font::BODY.size))
                         .text_color(hsla(p.text))
                         .when(selected, |c| c.font_weight(FontWeight::MEDIUM))
-                        .child(r.name.clone()),
+                        .child({
+                            // Below the ID breakpoint the short ID moves into this tooltip.
+                            let short = SharedString::from(short_image_id(&r.id));
+                            let name = r.id.clone();
+                            div()
+                                .id(SharedString::from(format!("ctr-name-{}", r.id)))
+                                .debug_selector(move || format!("ctr-name-{name}"))
+                                .when(!show_id, |c| {
+                                    c.tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(short.clone())
+                                            .build(window, cx)
+                                    })
+                                })
+                                .child(r.name.clone())
+                        }),
                 )
-                .child(col(1).child(mono(short_image_id(&r.id), p.text_2)))
+                .when(show_id, |row| {
+                    row.child(
+                        col(copy::CONTAINER_ID_COL).child(mono(short_image_id(&r.id), p.text_2)),
+                    )
+                })
                 .child(col(2).child(mono(r.image.clone(), p.text)))
                 .child(
                     col(3)
@@ -381,7 +417,7 @@ impl EnginePanel {
         });
         v_flex()
             .px(space(4))
-            .child(header("ctr", &cols, true, true, p))
+            .child(header("ctr", &cols, &shown, true, true, p))
             .children(body)
             .into_any_element()
     }
@@ -404,7 +440,7 @@ impl EnginePanel {
         });
         v_flex()
             .px(space(4))
-            .child(header("tbl", &cols, false, false, p))
+            .child(header("tbl", &cols, &all_cols(&cols), false, false, p))
             .children(body)
             .into_any_element()
     }
@@ -430,7 +466,7 @@ impl EnginePanel {
         });
         v_flex()
             .px(space(4))
-            .child(header("tbl", &cols, false, false, p))
+            .child(header("tbl", &cols, &all_cols(&cols), false, false, p))
             .children(body)
             .into_any_element()
     }
@@ -892,10 +928,22 @@ impl Render for EnginePanel {
         };
         let log = self.log.clone();
         let dialog = self.dialog.clone();
+        let this = cx.entity();
+        // Measures the panel each frame so the containers table can drop its ID column.
+        let measure = canvas(
+            move |bounds, _, cx| {
+                let w = f32::from(bounds.size.width);
+                this.update(cx, |v, cx| v.set_width(w, cx));
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
         v_flex()
             .relative()
             .size_full()
             .bg(hsla(p.bg))
+            .child(measure)
             .child(self.toolbar(window, p, cx))
             .when_some(self.notice_view(p), |d, n| d.child(n))
             .child(
