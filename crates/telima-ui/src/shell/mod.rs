@@ -18,9 +18,11 @@ use telima_app::view::{
 };
 use telima_core::profile::{Profile, ProfileName, ProfileSpec};
 
-use crate::components::button::{ButtonVariant, button, icon_button};
+use crate::components::button::{ButtonVariant, button, button_with_icon, icon_button};
 use crate::components::chip::status_chip;
 use crate::components::dialog::{fade_in, scrim};
+use crate::components::icons::{Icon, icon};
+use crate::components::paragraph::paragraph;
 use crate::components::skeleton::skeleton_row;
 use crate::components::status::{Status, status_shape};
 use crate::engine_views::{EnginePanel, ListState};
@@ -38,6 +40,8 @@ enum Msg {
     Profiles(Result<Vec<Profile>, AppError>),
     /// Stored spec for the edit form.
     Spec(ProfileName, Result<ProfileSpec, AppError>),
+    /// Stored spec for the inspector (VM 종류, 마운트); errors leave the values unknown.
+    Config(ProfileName, Result<ProfileSpec, AppError>),
     /// What a delete would remove: container count, volume count, volume bytes.
     DeleteFacts(ProfileName, usize, usize, u64),
 }
@@ -77,6 +81,8 @@ pub struct MainView {
     /// When each pending lifecycle command was sent (busy row elapsed time).
     started: HashMap<ProfileName, Instant>,
     selected: Option<ProfileName>,
+    /// Stored specs, loaded when a profile is selected (inspector values, N2).
+    configs: HashMap<ProfileName, ProfileSpec>,
     /// Profiles with a lifecycle command sent but not finished.
     pending: HashSet<ProfileName>,
     error: Option<String>,
@@ -109,6 +115,7 @@ impl MainView {
             creating: false,
             started: HashMap::new(),
             selected: None,
+            configs: HashMap::new(),
             pending: HashSet::new(),
             error: None,
             tab: Tab::Containers,
@@ -194,6 +201,7 @@ impl MainView {
                     self.profiles = Some(list);
                     self.not_installed = None;
                     self.sync_engine(cx);
+                    self.load_config();
                 }
                 Msg::Profiles(Err(e)) => {
                     let n = notice(&e);
@@ -211,6 +219,10 @@ impl MainView {
                     }
                 }
                 Msg::Spec(_, Err(e)) => self.error = Some(error_text(&e)),
+                Msg::Config(name, Ok(spec)) => {
+                    self.configs.insert(name, spec);
+                }
+                Msg::Config(_, Err(_)) => {}
                 Msg::DeleteFacts(name, containers, volumes, bytes) => {
                     if self.selected.as_ref() == Some(&name) && self.delete_confirm.is_none() {
                         let copy = confirm_delete_profile(&name, containers, volumes, bytes);
@@ -238,12 +250,29 @@ impl MainView {
             .update(cx, |e, cx| e.set_target(profile, tab, cx));
     }
 
+    /// Loads the selected profile's stored spec for the inspector, once per profile.
+    fn load_config(&mut self) {
+        let Some(name) = self.selected.clone() else {
+            return;
+        };
+        if self.configs.contains_key(&name) {
+            return;
+        }
+        let inbox = self.inbox.clone();
+        let key = name.clone();
+        self.app.profile_spec(name, move |r| {
+            inbox.lock().unwrap().push(Msg::Config(key, r))
+        });
+    }
+
     fn open_editor(&mut self, editor: Entity<ProfileEditor>, cx: &mut Context<Self>) {
         let sub = cx.subscribe(&editor, |v, _, ev: &FormEvent, cx| {
             v.editor = None;
             v.creating = false;
             if let FormEvent::Saved(name) = ev {
                 v.selected = Some(name.clone());
+                // The spec may have changed: reload it with the list.
+                v.configs.remove(name);
                 v.refresh();
             }
             cx.notify();
@@ -265,7 +294,7 @@ impl MainView {
     pub fn detail(&self) -> Option<ProfileDetail> {
         let name = self.selected.as_ref()?;
         let p = self.list().iter().find(|p| &p.name == name)?;
-        Some(profile_detail(p, None, self.busy(name)))
+        Some(profile_detail(p, self.configs.get(name), self.busy(name)))
     }
 
     pub fn select(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -274,6 +303,7 @@ impl MainView {
             self.editor = None;
             self.creating = false;
             self.sync_engine(cx);
+            self.load_config();
             cx.notify();
         }
     }
@@ -420,6 +450,15 @@ pub enum HeaderAction {
 }
 
 impl HeaderAction {
+    /// Canvas icon drawn before the label (M1).
+    pub fn icon(self) -> Icon {
+        match self {
+            HeaderAction::Start => Icon::Play,
+            HeaderAction::Restart => Icon::Restart,
+            HeaderAction::Stop => Icon::Stop,
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             HeaderAction::Start => "시작",
@@ -568,6 +607,13 @@ fn caption(text: impl Into<SharedString>, p: &Palette) -> Div {
         .child(text.into())
 }
 
+/// Caption-styled sentence that wraps only between Korean words (N5).
+fn note(text: &str, p: &Palette) -> Div {
+    paragraph(text)
+        .text_size(px(font::SMALL.size))
+        .text_color(hsla(p.text_2))
+}
+
 /// Monospace value text.
 fn mono(text: impl Into<SharedString>, color: crate::theme::Rgb) -> Div {
     div()
@@ -665,7 +711,7 @@ impl MainView {
                             .justify_between()
                             .child(caption("프로필", p).font_weight(FontWeight::MEDIUM))
                             .child(
-                                icon_button("new-profile", "+", p)
+                                icon_button("new-profile", icon(Icon::Plus, hsla(p.text_2)), p)
                                     .on_click(cx.listener(|v, _, _, cx| v.new_profile(cx))),
                             ),
                     )
@@ -757,18 +803,13 @@ impl MainView {
                     .cloned()
                     .map(|e| e.into_any_element())
                     .unwrap_or_else(|| div().into_any_element());
+                // Inline form at the page inset; the crumb carries 새 프로필 (N4).
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .child(
-                        h_flex().px(space(4)).pt(space(3)).pb(space(2)).child(
-                            div()
-                                .text_size(px(font::TITLE.size))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("새 프로필"),
-                        ),
-                    )
-                    .child(div().flex_1().min_h_0().child(body))
+                    .min_h_0()
+                    .p(space(4))
+                    .child(body)
                     .into_any_element()
             }
             Screen::Profile => self.profile_pane(p, cx),
@@ -797,8 +838,9 @@ impl MainView {
             return self.centred(caption("프로필을 선택하세요.", p));
         };
         let actions = self.header_actions().into_iter().map(|act| {
-            button(
+            button_with_icon(
                 SharedString::from(format!("header-{}", act.label())),
+                act.icon(),
                 act.label(),
                 ButtonVariant::Default,
                 p,
@@ -859,7 +901,12 @@ impl MainView {
                 })
         });
         let body: AnyElement = match self.editor() {
-            Some(editor) => editor.clone().into_any_element(),
+            // Inline edit form at the page inset; the header carries the profile (N4).
+            Some(editor) => div()
+                .size_full()
+                .p(space(4))
+                .child(editor.clone())
+                .into_any_element(),
             None => self.engine.clone().into_any_element(),
         };
         let progress = self.progress().cloned().map(|log| {
@@ -955,7 +1002,7 @@ impl MainView {
                         .child(caption("docker 소켓", p))
                         .child(mono(ins.socket, p.text)),
                 )
-                .child(caption(
+                .child(note(
                     "CPU·메모리·디스크를 바꾸면 다시 시작해야 적용됩니다.",
                     p,
                 ))
@@ -967,7 +1014,7 @@ impl MainView {
                         .border_t_1()
                         .border_color(hsla(p.border))
                         .child(heading("프로필 삭제", p))
-                        .child(caption(
+                        .child(note(
                             "VM 디스크와 컨테이너, 볼륨이 함께 지워집니다. 되돌릴 수 없습니다.",
                             p,
                         ))

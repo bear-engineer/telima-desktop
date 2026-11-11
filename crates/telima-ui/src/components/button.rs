@@ -104,6 +104,20 @@ pub fn button(
     .child(label.into().into_any_element())
 }
 
+/// Text button with a leading line icon in the label color (CSS `.btn > .ic`).
+pub fn button_with_icon(
+    id: impl Into<ElementId>,
+    kind: super::icons::Icon,
+    label: impl Into<SharedString>,
+    variant: ButtonVariant,
+    p: &Palette,
+) -> Stateful<Div> {
+    let c = button_colors(variant, p);
+    styled(base(id, p).px(px(metric::BTN_PAD_X)), c)
+        .child(super::icons::icon(kind, hsla(c.text)))
+        .child(label.into().into_any_element())
+}
+
 /// Disabled text button (CSS .btn[disabled]): no hover, no press, no click.
 pub fn button_disabled(
     id: impl Into<ElementId>,

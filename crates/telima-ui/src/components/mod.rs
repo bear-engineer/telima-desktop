@@ -6,9 +6,13 @@
 //! - [`segmented`], [`switch`]: choice controls
 //! - [`dialog`]: scrim and dialog frame with a fade-in
 //! - [`skeleton`]: loading row
+//! - [`paragraph`]: Korean-safe text that wraps only between words (eojeol)
+//! - [`icons`]: line icons (plus, play, stop, restart)
 pub mod button;
 pub mod chip;
 pub mod dialog;
+pub mod icons;
+pub mod paragraph;
 pub mod segmented;
 pub mod skeleton;
 pub mod status;

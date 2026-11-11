@@ -215,7 +215,10 @@ fn every_icon_has_strokes_inside_the_box() {
         let lines = strokes(i);
         assert!(!lines.is_empty(), "{i:?}");
         for (x, y) in lines.into_iter().flatten() {
-            assert!((0.0..=BOX).contains(&x) && (0.0..=BOX).contains(&y), "{i:?}");
+            assert!(
+                (0.0..=BOX).contains(&x) && (0.0..=BOX).contains(&y),
+                "{i:?}"
+            );
         }
     }
 }
