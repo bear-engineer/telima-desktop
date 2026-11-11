@@ -1,6 +1,7 @@
 //! Composition root: builds adapters, injects them, starts the GPUI application.
 
 mod dev_override;
+mod quit;
 mod tray;
 
 use std::cell::RefCell;
@@ -346,6 +347,7 @@ fn main() {
     application.run(move |cx| {
         gpui_kit::init(cx);
         telima_ui::init(cx);
+        quit::install(cx);
         open_main_window(&app, cx);
         wire_tray(app.clone(), cx);
     });
