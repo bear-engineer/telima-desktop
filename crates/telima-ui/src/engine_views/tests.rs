@@ -567,7 +567,7 @@ fn row_menu_opens_under_its_button_right_aligned(cx: &mut TestAppContext) {
         "menu {menu:?} not right-aligned to {more:?}"
     );
     assert!(
-        menu.top() >= more.bottom(),
-        "menu {menu:?} not under {more:?}"
+        menu.top() >= more.bottom() && menu.top() - more.bottom() <= space(0),
+        "menu {menu:?} not directly under {more:?}"
     );
 }
