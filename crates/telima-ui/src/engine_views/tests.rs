@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
-use gpui_kit::{AppContext, Entity, TestAppContext, px, size};
+use gpui_kit::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext, px, size};
 use telima_app::runtime::{App, BoxFuture, DynEngine, Spawner};
 use telima_app::testing::{FakeEngine, FakeVm};
 use telima_core::container::{Container, ContainerState, Image, Volume};
@@ -12,7 +12,8 @@ use telima_core::profile::{HostOs, ProfileName};
 
 use super::{EnginePanel, ListState, StatusFilter};
 use crate::shell::Tab;
-use crate::theme::metric;
+use crate::style::space;
+use crate::theme::{font, metric};
 
 #[derive(Default)]
 struct QueueSpawner(Mutex<Vec<BoxFuture<'static, ()>>>);
@@ -430,6 +431,12 @@ fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
             actions.left() >= row.left() && actions.right() <= row.right(),
             "actions {actions:?} outside row {row:?} at {w}"
         );
+        // N7: the actions slot sits flush with the row's inner right edge (no dead strip).
+        assert_eq!(
+            actions.right(),
+            row.right() - space(1),
+            "actions {actions:?} not flush right in row {row:?} at {w}"
+        );
         assert_eq!(head.left(), actions.left(), "header misaligned at {w}");
         assert_eq!(head.size.width, actions.size.width);
         for col in 0..super::copy::CONTAINER_COLS.len() {
@@ -444,5 +451,123 @@ fn container_row_actions_get_width_inside_the_row(cx: &mut TestAppContext) {
                 "column {col} at {w}"
             );
         }
+        // N7: the status column fits "실행 중 · 2시간" (3 = 상태 once 포트/시작 are hidden).
+        let need = status_text_width(cx);
+        let status = cx.debug_bounds("ctr-cell-c1-3").expect("status cell");
+        assert!(
+            status.size.width >= need,
+            "status cell {status:?} narrower than {need:?} at {w}"
+        );
+        // N7: no data → no 포트/시작 columns.
+        assert_eq!(
+            super::copy::CONTAINER_COLS.len(),
+            4,
+            "포트/시작 shown without data"
+        );
     }
+}
+
+fn status_text_width(cx: &mut VisualTestContext) -> gpui_kit::Pixels {
+    cx.update(|window, _| {
+        let s = "실행 중 · 2시간";
+        let run = window.text_style().to_run(s.len());
+        window
+            .text_system()
+            .layout_line(s, px(font::BODY.size), &[run], None)
+            .width
+    })
+}
+
+fn sel(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+/// A panel at the main pane width with one container whose image name is 120 characters.
+fn long_image_panel(cx: &mut TestAppContext) -> (Entity<EnginePanel>, &mut VisualTestContext) {
+    let (engine, spawner, _, app) = fake_app();
+    engine.containers.lock().unwrap()[1].image = format!("registry.example/{}", "x".repeat(103));
+    assert_eq!(engine.containers.lock().unwrap()[1].image.len(), 120);
+    let (view, cx) = cx.add_window_view(|_, cx| EnginePanel::new(app, cx));
+    let main = metric::WINDOW_W - metric::SIDEBAR - metric::INSPECTOR;
+    cx.simulate_resize(size(px(main), px(metric::WINDOW_H)));
+    let profile = ProfileName::parse("dev").unwrap();
+    view.update(cx, |v, cx| v.set_target(Some(profile), Tab::Containers, cx));
+    spawner.run_all();
+    view.update(cx, |v, cx| {
+        v.pump(cx);
+        v.select("c1", cx);
+    });
+    cx.run_until_parked();
+    (view, cx)
+}
+
+/// Opens the log panel the way a user does: ⋯ then 로그 보기.
+fn open_logs_by_menu(cx: &mut VisualTestContext) {
+    let more = cx.debug_bounds("ctr-more-c1").expect("⋯ button");
+    cx.simulate_click(more.center(), Modifiers::none());
+    cx.run_until_parked();
+    let item = cx
+        .debug_bounds(sel("menu-logs-c1".into()))
+        .expect("로그 보기 item");
+    cx.simulate_click(item.center(), Modifiers::none());
+    cx.run_until_parked();
+}
+
+/// N6: with a 120-char image the header text ellipsizes and the close button stays in the panel.
+#[gpui_kit::test]
+fn log_header_keeps_its_close_button_inside_the_panel(cx: &mut TestAppContext) {
+    let (view, cx) = long_image_panel(cx);
+    open_logs_by_menu(cx);
+    assert!(
+        view.read_with(cx, |v, _| v.log().is_some()),
+        "log panel opened"
+    );
+    let panel = cx.debug_bounds("log-panel").expect("log panel");
+    let close = cx.debug_bounds("log-close").expect("close button");
+    let follow = cx.debug_bounds("log-switches").expect("switches");
+    assert!(
+        close.left() >= panel.left() && close.right() <= panel.right(),
+        "close {close:?} outside panel {panel:?}"
+    );
+    assert!(close.size.width > px(0.), "close button squeezed");
+    assert!(
+        follow.left() >= panel.left() && follow.right() <= close.left(),
+        "switches {follow:?} not before close {close:?}"
+    );
+}
+
+/// N6: Escape closes the log panel.
+#[gpui_kit::test]
+fn escape_closes_the_log_panel(cx: &mut TestAppContext) {
+    let (view, cx) = long_image_panel(cx);
+    open_logs_by_menu(cx);
+    assert!(
+        view.read_with(cx, |v, _| v.log().is_some()),
+        "log panel opened"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |v, _| v.log().is_none()),
+        "Escape left the panel open"
+    );
+}
+
+/// L6: the ⋯ menu opens under its button, right-aligned to it.
+#[gpui_kit::test]
+fn row_menu_opens_under_its_button_right_aligned(cx: &mut TestAppContext) {
+    let (_view, cx) = long_image_panel(cx);
+    let more = cx.debug_bounds("ctr-more-c1").expect("⋯ button");
+    cx.simulate_click(more.center(), Modifiers::none());
+    cx.run_until_parked();
+    let menu = cx.debug_bounds("row-menu").expect("menu");
+    assert_eq!(
+        menu.right(),
+        more.right(),
+        "menu {menu:?} not right-aligned to {more:?}"
+    );
+    assert!(
+        menu.top() >= more.bottom(),
+        "menu {menu:?} not under {more:?}"
+    );
 }
