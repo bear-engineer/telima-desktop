@@ -9,3 +9,6 @@ impl Render for EngineViews {
         div()
     }
 }
+
+#[cfg(test)]
+mod tests;
