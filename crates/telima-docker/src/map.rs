@@ -5,13 +5,14 @@ use std::collections::{HashMap, HashSet};
 
 use bollard::container::LogOutput;
 use bollard::models::{
-    ContainerSummary, ContainerSummaryStateEnum, ImagePruneResponse, ImageSummary,
-    SystemDataUsageResponse, Volume, VolumePruneResponse,
+    ContainerInspectResponse, ContainerSummary, ContainerSummaryStateEnum, ImagePruneResponse,
+    ImageSummary, PortSummary, SystemDataUsageResponse, Volume, VolumePruneResponse,
 };
 use telima_core::container::{
-    Container, ContainerState, DiskUsage, Image, LogLine, LogStream, PruneReport,
-    Volume as DomainVolume,
+    Container, ContainerState, DiskUsage, Image, LogLine, LogStream, PortBinding, PortProtocol,
+    PruneReport, Volume as DomainVolume,
 };
+use telima_core::time::UnixMillis;
 
 /// Engine sizes and counts are signed; negatives mean "unknown" and map to zero or `None`.
 fn non_negative(v: i64) -> u64 {
@@ -40,6 +41,106 @@ pub fn map_container(summary: &ContainerSummary) -> Container {
         image: summary.image.clone().unwrap_or_default(),
         state,
         status_text: summary.status.clone().unwrap_or_default(),
+        ports: summary.ports.iter().flatten().map(map_port).collect(),
+        created_at: summary.created.map(UnixMillis::from_secs),
+        // The list endpoint has no start time; the engine adapter fills it from inspect.
+        started_at: None,
+    }
+}
+
+fn map_port(port: &PortSummary) -> PortBinding {
+    PortBinding {
+        host_ip: port.ip.clone().filter(|ip| !ip.is_empty()),
+        host_port: port.public_port,
+        container_port: port.private_port,
+        protocol: port
+            .typ
+            .and_then(|t| PortProtocol::parse(&t.to_string()))
+            .unwrap_or(PortProtocol::Tcp),
+    }
+}
+
+/// Last start time from a container inspect; `None` for never started or unparsable.
+pub fn map_started_at(inspect: &ContainerInspectResponse) -> Option<UnixMillis> {
+    inspect
+        .state
+        .as_ref()
+        .and_then(|s| s.started_at.as_deref())
+        .and_then(parse_rfc3339)
+}
+
+/// Parse an RFC3339 timestamp (`Z` or `±hh:mm`, optional fraction) to Unix millis,
+/// truncating below a millisecond. Docker's zero time (year 1) means "never" and
+/// yields `None`, as does anything malformed.
+pub fn parse_rfc3339(raw: &str) -> Option<UnixMillis> {
+    let b = raw.as_bytes();
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let digits = b.get(range)?;
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        std::str::from_utf8(digits).ok()?.parse().ok()
+    };
+    if b.get(4) != Some(&b'-')
+        || b.get(7) != Some(&b'-')
+        || !matches!(b.get(10), Some(b'T' | b't' | b' '))
+        || b.get(13) != Some(&b':')
+        || b.get(16) != Some(&b':')
+    {
+        return None;
+    }
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if year < 1970 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let mut i = 19;
+    let mut millis = 0;
+    if b.get(i) == Some(&b'.') {
+        let start = i + 1;
+        i = start;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == start {
+            return None;
+        }
+        let frac = &raw[start..i.min(start + 3)];
+        millis = frac.parse::<i64>().ok()? * 10_i64.pow(3 - frac.len() as u32);
+    }
+    let offset_secs = match b.get(i)? {
+        b'Z' | b'z' if i + 1 == b.len() => 0,
+        sign @ (b'+' | b'-') if i + 6 == b.len() && b[i + 3] == b':' => {
+            let secs = num(i + 1..i + 3)? * 3600 + num(i + 4..i + 6)? * 60;
+            if *sign == b'+' { secs } else { -secs }
+        }
+        _ => return None,
+    };
+    // Days since 1970-01-01 (proleptic Gregorian, Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + hour * 3600 + minute * 60 + second - offset_secs;
+    Some(UnixMillis(secs * 1000 + millis))
+}
+
+/// Split the `<RFC3339> ` prefix the engine adds to log lines (`timestamps=true`).
+/// A line without a valid prefix is returned whole with no timestamp.
+pub fn split_log_timestamp(line: &str) -> (Option<UnixMillis>, &str) {
+    let (head, rest) = match line.split_once(' ') {
+        Some(parts) => parts,
+        None => (line, ""),
+    };
+    match parse_rfc3339(head) {
+        Some(ts) => (Some(ts), rest),
+        None => (None, line),
     }
 }
 
@@ -204,6 +305,7 @@ pub fn map_log_output(output: &LogOutput) -> Option<LogLine> {
     Some(LogLine {
         stream,
         text: trimmed.to_owned(),
+        timestamp: None,
     })
 }
 

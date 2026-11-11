@@ -3,10 +3,13 @@
 use std::collections::HashMap;
 
 use bollard::errors::Error;
+use bollard::models::ContainerSummaryStateEnum;
+use bollard::query_parameters::LogsOptions;
 use bollard::query_parameters::{
-    ListContainersOptionsBuilder, ListImagesOptionsBuilder, LogsOptionsBuilder,
-    PruneImagesOptionsBuilder, PruneVolumesOptionsBuilder, RemoveContainerOptionsBuilder,
-    RestartContainerOptions,
+    InspectContainerOptions, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
+    LogsOptionsBuilder, PruneImagesOptionsBuilder, PruneVolumesOptionsBuilder,
+    RemoveContainerOptionsBuilder, RestartContainerOptions, StartContainerOptions,
+    StopContainerOptions, StopContainerOptionsBuilder,
 };
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::StreamExt;
@@ -16,6 +19,26 @@ use telima_core::ports::{ContainerEngine, PortError, PortResult};
 use crate::map;
 
 const TIMEOUT_SECS: u64 = 120;
+
+/// Seconds a stopping container gets to exit on SIGTERM before the engine kills it.
+pub const STOP_TIMEOUT_SECS: i32 = 10;
+
+fn stop_options() -> StopContainerOptions {
+    StopContainerOptionsBuilder::default()
+        .t(STOP_TIMEOUT_SECS)
+        .build()
+}
+
+/// Logs always ask for timestamps: the engine prefixes each line with RFC3339 and
+/// `map::split_log_timestamp` moves it into `LogLine::timestamp`.
+fn logs_options(follow: bool) -> LogsOptions {
+    LogsOptionsBuilder::default()
+        .follow(follow)
+        .stdout(true)
+        .stderr(true)
+        .timestamps(true)
+        .build()
+}
 
 /// Translate a bollard error into the port's error vocabulary.
 fn map_error(err: Error) -> PortError {
@@ -73,7 +96,43 @@ impl ContainerEngine for DockerEngine {
             .list_containers(Some(options))
             .await
             .map_err(map_error)?;
-        Ok(list.iter().map(map::map_container).collect())
+        // The list has no start time: inspect every container that has been started.
+        // A failed inspect leaves that start time unknown instead of failing the list.
+        let started = futures_util::future::join_all(list.iter().map(|summary| async move {
+            let id = summary.id.as_deref()?;
+            if summary.state == Some(ContainerSummaryStateEnum::CREATED) {
+                return None;
+            }
+            let inspect = self
+                .docker
+                .inspect_container(id, None::<InspectContainerOptions>)
+                .await
+                .ok()?;
+            map::map_started_at(&inspect)
+        }))
+        .await;
+        Ok(list
+            .iter()
+            .zip(started)
+            .map(|(summary, started_at)| Container {
+                started_at,
+                ..map::map_container(summary)
+            })
+            .collect())
+    }
+
+    async fn start_container(&self, id: &str) -> PortResult<()> {
+        self.docker
+            .start_container(id, None::<StartContainerOptions>)
+            .await
+            .map_err(map_error)
+    }
+
+    async fn stop_container(&self, id: &str) -> PortResult<()> {
+        self.docker
+            .stop_container(id, Some(stop_options()))
+            .await
+            .map_err(map_error)
     }
 
     async fn restart_container(&self, id: &str) -> PortResult<()> {
@@ -99,21 +158,18 @@ impl ContainerEngine for DockerEngine {
         follow: bool,
         sink: &mut (dyn FnMut(LogLine) + Send),
     ) -> PortResult<()> {
-        let options = LogsOptionsBuilder::default()
-            .follow(follow)
-            .stdout(true)
-            .stderr(true)
-            .build();
-        let mut stream = self.docker.logs(id, Some(options));
+        let mut stream = self.docker.logs(id, Some(logs_options(follow)));
         while let Some(chunk) = stream.next().await {
             let Some(line) = map::map_log_output(&chunk.map_err(map_error)?) else {
                 continue;
             };
             // A chunk may hold several lines; the sink gets one line each.
-            for text in line.text.split('\n') {
+            for raw in line.text.split('\n') {
+                let (timestamp, text) = map::split_log_timestamp(raw);
                 sink(LogLine {
                     stream: line.stream,
                     text: text.to_owned(),
+                    timestamp,
                 });
             }
         }
